@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Stardew (No Space)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "dotnet: build",
+            "program": "/Users/zwh/Library/Application Support/Steam/steamapps/common/StardewValley/Contents/MacOS/StardewModdingAPI",
+            "cwd": "/Users/zwh/Library/Application Support/Steam/steamapps/common/StardewValley/Contents/MacOS",
+            "args": [],
+            "stopAtEntry": false,
+            "console": "internalConsole"
+        }
+    ]
+}

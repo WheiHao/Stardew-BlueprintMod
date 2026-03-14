@@ -1,32 +1,33 @@
 ﻿using System;
-using Microsoft.Xna.Framework; // 用于 Vector2 结构
+using Microsoft.Xna.Framework;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
-using xTile.Tiles;
 using StardewValley;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 
 namespace BlueprintMod
 {
-    // 这里的 ": Mod" 表示继承 SMAPI 的基础功能
     public class ModEntry : Mod
     {
-        private Vector2? startTile = null; // 用来记录蓝图的起始位置
+        private Vector2? startTile = null;
 
-        public override void Entry(IModHelper helper) // Entry 是 Mod 的入口方法，就像游戏的“启动开关”
+        public override void Entry(IModHelper helper)
         {
-            // 我们在这里告诉游戏：当玩家按下键盘按键时，请通知我们
+            // 注册按键按下事件
             helper.Events.Input.ButtonPressed += OnButtonPressed;
         }
 
-        // 这是一个“事件处理方法”，每当按键按下，这段代码就会运行
         private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
         {
+            // --- 逻辑 A: 蓝图记录 (Ctrl + 鼠标左键) ---
             if (e.Button == SButton.MouseLeft && Helper.Input.IsDown(SButton.LeftControl))
             {
-                Vector2 currentTile = e.Cursor.GrabTile; // 获取当前鼠标所在的格子坐标
+                // 使用 Tile 属性获取鼠标点击的准确格子
+                Vector2 currentTile = e.Cursor.Tile; 
+                GameLocation location = Game1.currentLocation;
 
-                GameLocation location = Game1.currentLocation;// 获取玩家当前所在的地图位置
                 if (startTile == null)
                 {
                     startTile = currentTile;
@@ -34,61 +35,113 @@ namespace BlueprintMod
                 }
                 else
                 {
-                    //如果已经有起点，当前的点击就是终点
                     Vector2 endTile = currentTile;
-                    this.Monitor.Log($"终点已设置：{endTile}. 准备开始扫描区域", LogLevel.Debug);
-                    
-                    List<BlueprintItem> items = new List<BlueprintItem>(); // 用来存储扫描到的物品信息
+                    this.Monitor.Log($"终点已设置：{endTile}. 开始扫描区域...", LogLevel.Debug);
 
-                    // 计算出扫描区域的边界
+                    List<BlueprintItem> items = new List<BlueprintItem>();
+
+                    // 计算区域边界
                     int minX = (int)Math.Min(startTile.Value.X, endTile.X);
                     int maxX = (int)Math.Max(startTile.Value.X, endTile.X);
                     int minY = (int)Math.Min(startTile.Value.Y, endTile.Y);
                     int maxY = (int)Math.Max(startTile.Value.Y, endTile.Y);
-                    
-                    for (int x = minX; x <= maxX; x++)
+
+                    // 遍历当前地图的所有物品
+                    foreach (var tile in location.Objects.Keys)
                     {
-                        for (int y = minY; y <= maxY; y++)
+                        if (tile.X >= minX && tile.X <= maxX && tile.Y >= minY && tile.Y <= maxY)
                         {
-                            Vector2 tile = new Vector2(x, y);
-                            if(location.Objects.ContainsKey(tile))
+                            var obj = location.Objects[tile];
+                            items.Add(new BlueprintItem
                             {
-                                var obj = location.Objects[tile];// 获取这个格子上的物品
-                                BlueprintItem newItem = new BlueprintItem //创建蓝图项并赋值
-                                {
-                                    ItemId = obj.Name, // 物品的名称作为 ID
-                                    TileX = x - minX, //计算相对于起点的x坐标
-                                    TileY = y - minY //计算相对于起点的y坐标
-                                };
-                                items.Add (newItem); // 将这个物品添加到列表中
-                            }
+                                // 使用 QualifiedItemId 确保 1.6 版本的物品识别准确
+                                ItemId = obj.QualifiedItemId, 
+                                TileX = tile.X - minX,
+                                TileY = tile.Y - minY,
+                                Name = obj.DisplayName
+                            });
                         }
-                    }//双重循环结束，扫描完成
-                    
+                    }
+
                     if (items.Count == 0)
                     {
-                        this.Monitor.Log("在选定的区域内没有可记录的物品。", LogLevel.Warn);
+                        this.Monitor.Log("选定区域内没有可记录的物品。", LogLevel.Warn);
                     }
                     else
                     {
-                        this.Monitor.Log($"扫描完成，找到 {items.Count} 个物品,准备保存蓝图", LogLevel.Info);
-
-                        string timeStamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");//获取当前时间戳，作为文件名的一部分
-                        string fileName = $"blueprint_{timeStamp}.json"; //构造文件名                                                         
-                        string path = $"blueprints/{fileName}"; //把文件夹名和文件名组合在一起
-                        this.Helper.Data.WriteJsonFile(path, items);//将物品列表保存为 JSON 文件
+                        string timeStamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                        string fileName = $"blueprint_{timeStamp}.json";
+                        // 保存到 Mod 根目录下的 blueprints 文件夹
+                        this.Helper.Data.WriteJsonFile($"blueprints/{fileName}", items);
+                        this.Monitor.Log($"已成功保存 {items.Count} 个物品到 {fileName}", LogLevel.Info);
                     }
-                        startTile = null; // 重置起点，为下一次扫描做准备
 
+                    startTile = null; // 重置起点
                 }
             }
+            // --- 逻辑 B: 蓝图加载 (Ctrl + L) ---
+            else if (e.Button == SButton.L && Helper.Input.IsDown(SButton.LeftControl))
+            {
+                LoadAndPlaceBlueprint();
+            }
+        }
+
+        private void LoadAndPlaceBlueprint()
+        {
+            string folderPath = Path.Combine(this.Helper.DirectoryPath, "blueprints");
+            if (!Directory.Exists(folderPath))
+            {
+                this.Monitor.Log("蓝图文件夹不存在！", LogLevel.Error);
+                return;
+            }
+
+            // 获取最新修改的蓝图文件
+            var directory = new DirectoryInfo(folderPath);
+            var latestFile = directory.GetFiles("*.json")
+                                     .OrderByDescending(f => f.LastWriteTime)
+                                     .FirstOrDefault();
+
+            if (latestFile == null)
+            {
+                this.Monitor.Log("未找到蓝图文件。", LogLevel.Warn);
+                return;
+            }
+
+            List<BlueprintItem> savedItems = this.Helper.Data.ReadJsonFile<List<BlueprintItem>>($"blueprints/{latestFile.Name}");
+            if (savedItems == null) return;
+
+            GameLocation location = Game1.currentLocation;
+            Vector2 playerPos = Game1.player.Tile; // 以玩家当前位置为粘贴起点
+
+            int placedCount = 0;
+            foreach (var item in savedItems)
+            {
+                Vector2 targetTile = new Vector2(playerPos.X + item.TileX, playerPos.Y + item.TileY);
+
+                // 使用 1.6 推荐的 ItemRegistry 来创建物品，解决红叉错误
+                Item newItem = ItemRegistry.Create(item.ItemId);
+                
+                if (newItem is StardewValley.Object obj)
+                {
+                    obj.TileLocation = targetTile;
+                    
+                    // 检查目标格子是否已有物品
+                    if (!location.Objects.ContainsKey(targetTile))
+                    {
+                        location.Objects.Add(targetTile, obj);
+                        placedCount++;
+                    }
+                }
+            }
+            this.Monitor.Log($"成功从 {latestFile.Name} 加载并放置了 {placedCount} 个物品。", LogLevel.Info);
         }
     }
+
     public class BlueprintItem
     {
-        public string ItemId { get; set; }   // 物品的 ID（比如 "Cask"）
-        public float TileX { get; set; }     // 横向坐标
-        public float TileY { get; set; }     // 纵向坐标
-        public string Data { get; set; }      // 额外数据（比如物品的状态）
+        public string ItemId { get; set; }
+        public float TileX { get; set; }
+        public float TileY { get; set; }
+        public string Name { get; set; }
     }
 }
