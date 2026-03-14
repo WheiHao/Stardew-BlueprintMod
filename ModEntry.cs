@@ -4,6 +4,7 @@ using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using xTile.Tiles;
 using StardewValley;
+using System.Collections.Generic;
 
 namespace BlueprintMod
 {
