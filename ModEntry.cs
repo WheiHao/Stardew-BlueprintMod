@@ -19,8 +19,6 @@ namespace BlueprintMod
         private List<FileInfo> blueprintFiles = new List<FileInfo>();
         private int currentBlueprintIndex = 0;
         private Dictionary<Vector2, string> placedGhosts = new Dictionary<Vector2, string>();
-
-        // --- 新增：模式切换开关 (默认开启规划模式，保护平衡性) ---
         private bool isCreativeMode = false;
 
         public override void Entry(IModHelper helper)
@@ -31,28 +29,24 @@ namespace BlueprintMod
 
         private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
         {
-            // 模式切换按键：按下 K 键切换
+            // K 键切换模式
             if (e.Button == SButton.K)
             {
                 isCreativeMode = !isCreativeMode;
-                string modeName = isCreativeMode ? "创造模式 (直接放置)" : "生存模式 (规划虚影)";
-                this.Monitor.Log($"已切换到 {modeName}", LogLevel.Info);
-                Game1.addHUDMessage(new HUDMessage($"蓝图模式: {modeName}", 3)); // 游戏内左下角弹出提示
+                string modeName = isCreativeMode ? "创造模式" : "生存模式";
+                Game1.addHUDMessage(new HUDMessage($"蓝图模式: {modeName}", 3));
                 return;
             }
 
+            // 预览状态逻辑
             if (isPreviewMode)
             {
                 if (e.Button == SButton.MouseLeft)
                 {
                     Vector2 mouseTile = Helper.Input.GetCursorPosition().Tile;
+                    if (isCreativeMode) PlaceBlueprintReal(mouseTile);
+                    else PlaceGhosts(mouseTile);
                     
-                    // --- 核心分支逻辑 ---
-                    if (isCreativeMode)
-                        PlaceBlueprintReal(mouseTile); // 直接变出东西
-                    else
-                        PlaceGhosts(mouseTile);        // 变出虚影
-
                     isPreviewMode = false;
                     previewItems = null;
                     Helper.Input.Suppress(SButton.MouseLeft);
@@ -69,13 +63,11 @@ namespace BlueprintMod
                 return;
             }
 
-            // 填装虚影逻辑 (仅在生存模式有意义)
+            // 填充虚影逻辑
             if (!isCreativeMode && e.Button == SButton.MouseLeft)
-            {
                 HandleGhostFilling(e.Cursor.Tile);
-            }
 
-            // 记录蓝图逻辑
+            // 记录蓝图 (Ctrl + Left Click)
             if (e.Button == SButton.MouseLeft && Helper.Input.IsDown(SButton.LeftControl))
             {
                 if (startTile == null) startTile = e.Cursor.Tile;
@@ -87,23 +79,58 @@ namespace BlueprintMod
             }
         }
 
-        // 逻辑 A: 直接放置真实物体 (创造模式)
+        private void OnRenderedWorld(object sender, RenderedWorldEventArgs e)
+        {
+            // 1. 绘制选择框
+            if (startTile.HasValue)
+                DrawSelectionBox(e.SpriteBatch, startTile.Value, Helper.Input.GetCursorPosition().Tile, Color.White * 0.3f);
+
+            // 2. 绘制粘贴预览 (带碰撞检测)
+            if (isPreviewMode && previewItems != null)
+            {
+                Vector2 mouseTile = Helper.Input.GetCursorPosition().Tile;
+                foreach (var item in previewItems)
+                {
+                    Vector2 targetTile = new Vector2(mouseTile.X + item.TileX, mouseTile.Y + item.TileY);
+                    
+                    // --- 核心改进：检测地块是否被占用 ---
+                    // 只要地块有东西，或者已经有虚影了，就标记为 blocked
+                    bool isBlocked = Game1.currentLocation.Objects.ContainsKey(targetTile) 
+                                  || placedGhosts.ContainsKey(targetTile);
+
+                    // 颜色逻辑：被挡住就变红，否则根据模式显示绿色或青色
+                    Color previewColor = isBlocked ? Color.Red * 0.8f : (isCreativeMode ? Color.LightGreen : Color.Cyan);
+
+                    DrawGhost(e.SpriteBatch, targetTile, item.ItemId, 0.5f, previewColor);
+                }
+                
+                // 显示当前蓝图名称
+                string fileName = blueprintFiles[currentBlueprintIndex].Name;
+                e.SpriteBatch.DrawString(Game1.dialogueFont, $"Blueprint: {fileName}", new Vector2(100, 100), Color.White);
+            }
+
+            // 3. 绘制地图上已有的虚影
+            foreach (var ghost in placedGhosts)
+                DrawGhost(e.SpriteBatch, ghost.Key, ghost.Value, 0.4f, Color.Red * 0.6f);
+        }
+
         private void PlaceBlueprintReal(Vector2 origin)
         {
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
-                Item newItem = ItemRegistry.Create(item.ItemId);
-                if (newItem is StardewValley.Object obj && !Game1.currentLocation.Objects.ContainsKey(targetTile))
+                if (!Game1.currentLocation.Objects.ContainsKey(targetTile))
                 {
-                    obj.TileLocation = targetTile;
-                    Game1.currentLocation.Objects.Add(targetTile, obj);
+                    Item newItem = ItemRegistry.Create(item.ItemId);
+                    if (newItem is StardewValley.Object obj)
+                    {
+                        obj.TileLocation = targetTile;
+                        Game1.currentLocation.Objects.Add(targetTile, obj);
+                    }
                 }
             }
-            this.Monitor.Log("蓝图已直接部署 (创造模式)。", LogLevel.Info);
         }
 
-        // 逻辑 B: 放置待建造虚影 (生存模式)
         private void PlaceGhosts(Vector2 origin)
         {
             foreach (var item in previewItems)
@@ -114,10 +141,8 @@ namespace BlueprintMod
                     placedGhosts[targetTile] = item.ItemId;
                 }
             }
-            this.Monitor.Log("规划虚影已部署 (生存模式)。", LogLevel.Info);
         }
 
-        // 处理虚影填充
         private void HandleGhostFilling(Vector2 tile)
         {
             if (placedGhosts.ContainsKey(tile))
@@ -134,24 +159,6 @@ namespace BlueprintMod
             }
         }
 
-        // 渲染逻辑
-        private void OnRenderedWorld(object sender, RenderedWorldEventArgs e)
-        {
-            if (startTile.HasValue)
-                DrawSelectionBox(e.SpriteBatch, startTile.Value, Helper.Input.GetCursorPosition().Tile, Color.White * 0.3f);
-
-            if (isPreviewMode && previewItems != null)
-            {
-                Vector2 mouseTile = Helper.Input.GetCursorPosition().Tile;
-                foreach (var item in previewItems)
-                    DrawGhost(e.SpriteBatch, new Vector2(mouseTile.X + item.TileX, mouseTile.Y + item.TileY), item.ItemId, 0.5f, isCreativeMode ? Color.LightGreen : Color.Cyan);
-            }
-
-            foreach (var ghost in placedGhosts)
-                DrawGhost(e.SpriteBatch, ghost.Key, ghost.Value, 0.4f, Color.Red * 0.7f);
-        }
-
-        // 通用绘制方法
         private void DrawGhost(SpriteBatch b, Vector2 tile, string itemId, float alpha, Color? tint = null)
         {
             Rectangle destRect = new Rectangle((int)(tile.X * 64 - Game1.viewport.X), (int)(tile.Y * 64 - Game1.viewport.Y), 64, 64);
@@ -159,7 +166,6 @@ namespace BlueprintMod
             if (itemData != null) b.Draw(itemData.GetTexture(), destRect, itemData.GetSourceRect(), (tint ?? Color.White) * alpha);
         }
 
-        // 其余方法 (DrawSelectionBox, SaveBlueprint, EnterPreviewMode, SwitchBlueprint, LoadCurrentBlueprint) 保持不变即可
         private void DrawSelectionBox(SpriteBatch b, Vector2 start, Vector2 end, Color color)
         {
             int minX = (int)Math.Min(start.X, end.X); int maxX = (int)Math.Max(start.X, end.X);
