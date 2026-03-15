@@ -43,12 +43,7 @@ namespace BlueprintMod
             {
                 if (e.Button == SButton.MouseLeft)
                 {
-                    Vector2 mouseTile = Helper.Input.GetCursorPosition().Tile;
-                    if (isCreativeMode) PlaceBlueprintReal(mouseTile);
-                    else PlaceGhosts(mouseTile);
-                    
-                    isPreviewMode = false;
-                    previewItems = null;
+                    HandlePlacementAttempt();
                     Helper.Input.Suppress(SButton.MouseLeft);
                 }
                 else if (e.Button == SButton.MouseRight)
@@ -67,7 +62,7 @@ namespace BlueprintMod
             if (!isCreativeMode && e.Button == SButton.MouseLeft)
                 HandleGhostFilling(e.Cursor.Tile);
 
-            // 记录蓝图 (Ctrl + Left Click)
+            // 记录蓝图
             if (e.Button == SButton.MouseLeft && Helper.Input.IsDown(SButton.LeftControl))
             {
                 if (startTile == null) startTile = e.Cursor.Tile;
@@ -79,70 +74,92 @@ namespace BlueprintMod
             }
         }
 
+        // --- 核心修改：全局预检放置逻辑 ---
+        private void HandlePlacementAttempt()
+        {
+            Vector2 mouseTile = Helper.Input.GetCursorPosition().Tile;
+            bool hasCollision = false;
+
+            // 1. 预检阶段：遍历所有计划放置的位置
+            foreach (var item in previewItems)
+            {
+                Vector2 targetTile = new Vector2(mouseTile.X + item.TileX, mouseTile.Y + item.TileY);
+                // 检查：是否有游戏物体 OR 是否已经有待建虚影
+                if (Game1.currentLocation.Objects.ContainsKey(targetTile) || placedGhosts.ContainsKey(targetTile))
+                {
+                    hasCollision = true;
+                    break; 
+                }
+            }
+
+            // 2. 决策阶段
+            if (hasCollision)
+            {
+                Game1.playSound("cancel");
+                Game1.showRedMessage("无法放置：蓝图范围内存在障碍物！");
+            }
+            else
+            {
+                // 只有完全通过才执行
+                if (isCreativeMode) PlaceBlueprintReal(mouseTile);
+                else PlaceGhosts(mouseTile);
+                
+                isPreviewMode = false;
+                previewItems = null;
+                Game1.playSound("purchase"); // 成功音效
+            }
+        }
+
         private void OnRenderedWorld(object sender, RenderedWorldEventArgs e)
         {
-            // 1. 绘制选择框
             if (startTile.HasValue)
                 DrawSelectionBox(e.SpriteBatch, startTile.Value, Helper.Input.GetCursorPosition().Tile, Color.White * 0.3f);
 
-            // 2. 绘制粘贴预览 (带碰撞检测)
             if (isPreviewMode && previewItems != null)
             {
                 Vector2 mouseTile = Helper.Input.GetCursorPosition().Tile;
                 foreach (var item in previewItems)
                 {
                     Vector2 targetTile = new Vector2(mouseTile.X + item.TileX, mouseTile.Y + item.TileY);
-                    
-                    // --- 核心改进：检测地块是否被占用 ---
-                    // 只要地块有东西，或者已经有虚影了，就标记为 blocked
-                    bool isBlocked = Game1.currentLocation.Objects.ContainsKey(targetTile) 
-                                  || placedGhosts.ContainsKey(targetTile);
-
-                    // 颜色逻辑：被挡住就变红，否则根据模式显示绿色或青色
+                    bool isBlocked = Game1.currentLocation.Objects.ContainsKey(targetTile) || placedGhosts.ContainsKey(targetTile);
                     Color previewColor = isBlocked ? Color.Red * 0.8f : (isCreativeMode ? Color.LightGreen : Color.Cyan);
-
                     DrawGhost(e.SpriteBatch, targetTile, item.ItemId, 0.5f, previewColor);
                 }
                 
-                // 显示当前蓝图名称
                 string fileName = blueprintFiles[currentBlueprintIndex].Name;
                 e.SpriteBatch.DrawString(Game1.dialogueFont, $"Blueprint: {fileName}", new Vector2(100, 100), Color.White);
             }
 
-            // 3. 绘制地图上已有的虚影
             foreach (var ghost in placedGhosts)
                 DrawGhost(e.SpriteBatch, ghost.Key, ghost.Value, 0.4f, Color.Red * 0.6f);
         }
 
+        // 放置实物（现在不需要再做单格检查，因为 HandlePlacementAttempt 已经查过了）
         private void PlaceBlueprintReal(Vector2 origin)
         {
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
-                if (!Game1.currentLocation.Objects.ContainsKey(targetTile))
+                Item newItem = ItemRegistry.Create(item.ItemId);
+                if (newItem is StardewValley.Object obj)
                 {
-                    Item newItem = ItemRegistry.Create(item.ItemId);
-                    if (newItem is StardewValley.Object obj)
-                    {
-                        obj.TileLocation = targetTile;
-                        Game1.currentLocation.Objects.Add(targetTile, obj);
-                    }
+                    obj.TileLocation = targetTile;
+                    Game1.currentLocation.Objects.Add(targetTile, obj);
                 }
             }
         }
 
+        // 放置虚影
         private void PlaceGhosts(Vector2 origin)
         {
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
-                if (!Game1.currentLocation.Objects.ContainsKey(targetTile) && !placedGhosts.ContainsKey(targetTile))
-                {
-                    placedGhosts[targetTile] = item.ItemId;
-                }
+                placedGhosts[targetTile] = item.ItemId;
             }
         }
 
+        // 辅助方法... (DrawGhost, HandleGhostFilling, DrawSelectionBox, SaveBlueprint, EnterPreviewMode, SwitchBlueprint, LoadCurrentBlueprint)
         private void HandleGhostFilling(Vector2 tile)
         {
             if (placedGhosts.ContainsKey(tile))
