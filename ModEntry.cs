@@ -4,7 +4,7 @@ using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
-using StardewValley.ItemTypeDefinitions; // 处理 1.6 物品数据
+using StardewValley.ItemTypeDefinitions;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -16,6 +16,10 @@ namespace BlueprintMod
         private Vector2? startTile = null;
         private List<BlueprintItem> previewItems = null;
         private bool isPreviewMode = false;
+        
+        // --- 新增：用于选择蓝图的变量 ---
+        private List<FileInfo> blueprintFiles = new List<FileInfo>();
+        private int currentBlueprintIndex = 0;
 
         public override void Entry(IModHelper helper)
         {
@@ -32,13 +36,17 @@ namespace BlueprintMod
                     PlaceBlueprint(Helper.Input.GetCursorPosition().Tile);
                     isPreviewMode = false;
                     previewItems = null;
-                    // --- 修复处：改为使用 Suppress ---
-                    Helper.Input.Suppress(SButton.MouseLeft); 
+                    Helper.Input.Suppress(SButton.MouseLeft);
                 }
                 else if (e.Button == SButton.MouseRight)
                 {
                     isPreviewMode = false;
                     previewItems = null;
+                }
+                // --- 新增：切换蓝图逻辑 ---
+                else if (e.Button == SButton.Left || e.Button == SButton.Right)
+                {
+                    SwitchBlueprint(e.Button == SButton.Right);
                 }
                 return;
             }
@@ -59,41 +67,74 @@ namespace BlueprintMod
             }
         }
 
+        private void EnterPreviewMode()
+        {
+            string folderPath = Path.Combine(this.Helper.DirectoryPath, "blueprints");
+            if (!Directory.Exists(folderPath)) return;
+
+            // 获取所有 JSON 文件并按时间排序
+            blueprintFiles = new DirectoryInfo(folderPath).GetFiles("*.json")
+                                 .OrderByDescending(f => f.LastWriteTime)
+                                 .ToList();
+
+            if (blueprintFiles.Count == 0)
+            {
+                this.Monitor.Log("未找到蓝图文件！", LogLevel.Warn);
+                return;
+            }
+
+            currentBlueprintIndex = 0;
+            LoadCurrentBlueprint();
+            isPreviewMode = true;
+        }
+
+        // 切换蓝图的核心逻辑
+        private void SwitchBlueprint(bool next)
+        {
+            if (blueprintFiles.Count <= 1) return;
+
+            if (next)
+                currentBlueprintIndex = (currentBlueprintIndex + 1) % blueprintFiles.Count;
+            else
+                currentBlueprintIndex = (currentBlueprintIndex - 1 + blueprintFiles.Count) % blueprintFiles.Count;
+
+            LoadCurrentBlueprint();
+            this.Monitor.Log($"已切换蓝图: {blueprintFiles[currentBlueprintIndex].Name}", LogLevel.Info);
+        }
+
+        private void LoadCurrentBlueprint()
+        {
+            var file = blueprintFiles[currentBlueprintIndex];
+            previewItems = this.Helper.Data.ReadJsonFile<List<BlueprintItem>>($"blueprints/{file.Name}");
+        }
+
         private void OnRenderedWorld(object sender, RenderedWorldEventArgs e)
         {
-            // 绘制记录选区的框
             if (startTile.HasValue)
                 DrawSelectionBox(e.SpriteBatch, startTile.Value, Helper.Input.GetCursorPosition().Tile, Color.White * 0.3f);
 
-            // 绘制粘贴预览的“灵魂虚影”
             if (isPreviewMode && previewItems != null)
             {
                 Vector2 mouseTile = Helper.Input.GetCursorPosition().Tile;
                 foreach (var item in previewItems)
                 {
                     Vector2 targetTile = new Vector2(mouseTile.X + item.TileX, mouseTile.Y + item.TileY);
-                    Rectangle destRect = new Rectangle(
-                        (int)(targetTile.X * 64 - Game1.viewport.X),
-                        (int)(targetTile.Y * 64 - Game1.viewport.Y),
-                        64, 64
-                    );
+                    Rectangle destRect = new Rectangle((int)(targetTile.X * 64 - Game1.viewport.X), (int)(targetTile.Y * 64 - Game1.viewport.Y), 64, 64);
 
-                    // 1.6 版本的图标获取方式
                     ParsedItemData itemData = ItemRegistry.GetData(item.ItemId);
                     if (itemData != null)
                     {
-                        e.SpriteBatch.Draw(
-                            itemData.GetTexture(),
-                            destRect,
-                            itemData.GetSourceRect(),
-                            Color.White * 0.5f // 半透明虚影
-                        );
+                        e.SpriteBatch.Draw(itemData.GetTexture(), destRect, itemData.GetSourceRect(), Color.White * 0.5f);
                     }
                     else
                     {
                         e.SpriteBatch.Draw(Game1.staminaRect, destRect, Color.Cyan * 0.5f);
                     }
                 }
+
+                // --- 新增：在屏幕上显示当前蓝图的文件名 ---
+                string fileName = blueprintFiles[currentBlueprintIndex].Name;
+                e.SpriteBatch.DrawString(Game1.dialogueFont, $"Blueprint: {fileName}", new Vector2(100, 100), Color.White);
             }
         }
 
@@ -113,17 +154,6 @@ namespace BlueprintMod
             }
         }
 
-        private void EnterPreviewMode()
-        {
-            string folderPath = Path.Combine(this.Helper.DirectoryPath, "blueprints");
-            if (!Directory.Exists(folderPath)) return;
-            var latestFile = new DirectoryInfo(folderPath).GetFiles("*.json").OrderByDescending(f => f.LastWriteTime).FirstOrDefault();
-            if (latestFile == null) return;
-
-            previewItems = this.Helper.Data.ReadJsonFile<List<BlueprintItem>>($"blueprints/{latestFile.Name}");
-            if (previewItems != null) isPreviewMode = true;
-        }
-
         private void DrawSelectionBox(SpriteBatch b, Vector2 start, Vector2 end, Color color)
         {
             int minX = (int)Math.Min(start.X, end.X);
@@ -141,7 +171,6 @@ namespace BlueprintMod
             int maxX = (int)Math.Max(start.X, end.X);
             int minY = (int)Math.Min(start.Y, end.Y);
             int maxY = (int)Math.Max(start.Y, end.Y);
-
             foreach (var tile in location.Objects.Keys)
             {
                 if (tile.X >= minX && tile.X <= maxX && tile.Y >= minY && tile.Y <= maxY)
