@@ -4,6 +4,7 @@ using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
+using StardewValley.ItemTypeDefinitions; // 处理 1.6 物品数据
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -13,7 +14,7 @@ namespace BlueprintMod
     public class ModEntry : Mod
     {
         private Vector2? startTile = null;
-        private List<BlueprintItem> previewItems = null; // 存储预览中的物品
+        private List<BlueprintItem> previewItems = null;
         private bool isPreviewMode = false;
 
         public override void Entry(IModHelper helper)
@@ -24,59 +25,75 @@ namespace BlueprintMod
 
         private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
         {
-            // --- 情况 1: 预览模式下的操作 ---
             if (isPreviewMode)
             {
-                if (e.Button == SButton.MouseLeft) // 左键确认放置
+                if (e.Button == SButton.MouseLeft)
                 {
                     PlaceBlueprint(Helper.Input.GetCursorPosition().Tile);
                     isPreviewMode = false;
                     previewItems = null;
-                    Helper.Input.Suppress(SButton.MouseLeft); // 防止触发游戏内原本的左键动作
+                    // --- 修复处：改为使用 Suppress ---
+                    Helper.Input.Suppress(SButton.MouseLeft); 
                 }
-                else if (e.Button == SButton.MouseRight) // 右键取消预览
+                else if (e.Button == SButton.MouseRight)
                 {
                     isPreviewMode = false;
                     previewItems = null;
-                    this.Monitor.Log("预览已取消", LogLevel.Debug);
                 }
-                return; // 预览模式下不执行其他逻辑
+                return;
             }
 
-            // --- 情况 2: 记录蓝图 (Ctrl + Left Click) ---
             if (e.Button == SButton.MouseLeft && Helper.Input.IsDown(SButton.LeftControl))
             {
                 Vector2 currentTile = e.Cursor.Tile;
-                if (startTile == null) {
-                    startTile = currentTile;
-                } else {
+                if (startTile == null) startTile = currentTile;
+                else
+                {
                     SaveBlueprint(Game1.currentLocation, startTile.Value, currentTile);
                     startTile = null;
                 }
             }
-            // --- 情况 3: 开启预览 (Ctrl + L) ---
             else if (e.Button == SButton.L && Helper.Input.IsDown(SButton.LeftControl))
             {
                 EnterPreviewMode();
             }
         }
 
-        private void EnterPreviewMode()
+        private void OnRenderedWorld(object sender, RenderedWorldEventArgs e)
         {
-            string folderPath = Path.Combine(this.Helper.DirectoryPath, "blueprints");
-            if (!Directory.Exists(folderPath)) return;
+            // 绘制记录选区的框
+            if (startTile.HasValue)
+                DrawSelectionBox(e.SpriteBatch, startTile.Value, Helper.Input.GetCursorPosition().Tile, Color.White * 0.3f);
 
-            var latestFile = new DirectoryInfo(folderPath).GetFiles("*.json")
-                                 .OrderByDescending(f => f.LastWriteTime)
-                                 .FirstOrDefault();
-
-            if (latestFile == null) return;
-
-            previewItems = this.Helper.Data.ReadJsonFile<List<BlueprintItem>>($"blueprints/{latestFile.Name}");
-            if (previewItems != null)
+            // 绘制粘贴预览的“灵魂虚影”
+            if (isPreviewMode && previewItems != null)
             {
-                isPreviewMode = true;
-                this.Monitor.Log($"已开启预览：{latestFile.Name}。左键点击放置，右键取消。", LogLevel.Info);
+                Vector2 mouseTile = Helper.Input.GetCursorPosition().Tile;
+                foreach (var item in previewItems)
+                {
+                    Vector2 targetTile = new Vector2(mouseTile.X + item.TileX, mouseTile.Y + item.TileY);
+                    Rectangle destRect = new Rectangle(
+                        (int)(targetTile.X * 64 - Game1.viewport.X),
+                        (int)(targetTile.Y * 64 - Game1.viewport.Y),
+                        64, 64
+                    );
+
+                    // 1.6 版本的图标获取方式
+                    ParsedItemData itemData = ItemRegistry.GetData(item.ItemId);
+                    if (itemData != null)
+                    {
+                        e.SpriteBatch.Draw(
+                            itemData.GetTexture(),
+                            destRect,
+                            itemData.GetSourceRect(),
+                            Color.White * 0.5f // 半透明虚影
+                        );
+                    }
+                    else
+                    {
+                        e.SpriteBatch.Draw(Game1.staminaRect, destRect, Color.Cyan * 0.5f);
+                    }
+                }
             }
         }
 
@@ -94,32 +111,17 @@ namespace BlueprintMod
                         location.Objects.Add(targetTile, obj);
                 }
             }
-            this.Monitor.Log("蓝图已放置完成！", LogLevel.Info);
         }
 
-        private void OnRenderedWorld(object sender, RenderedWorldEventArgs e)
+        private void EnterPreviewMode()
         {
-            // 1. 绘制“记录区域”的白框
-            if (startTile.HasValue)
-            {
-                DrawSelectionBox(e.SpriteBatch, startTile.Value, Helper.Input.GetCursorPosition().Tile, Color.White * 0.3f);
-            }
+            string folderPath = Path.Combine(this.Helper.DirectoryPath, "blueprints");
+            if (!Directory.Exists(folderPath)) return;
+            var latestFile = new DirectoryInfo(folderPath).GetFiles("*.json").OrderByDescending(f => f.LastWriteTime).FirstOrDefault();
+            if (latestFile == null) return;
 
-            // 2. 绘制“粘贴预览”的虚影
-            if (isPreviewMode && previewItems != null)
-            {
-                Vector2 mouseTile = Helper.Input.GetCursorPosition().Tile;
-                foreach (var item in previewItems)
-                {
-                    // 计算每个预览物品的像素位置
-                    float drawX = (mouseTile.X + item.TileX) * 64 - Game1.viewport.X;
-                    float drawY = (mouseTile.Y + item.TileY) * 64 - Game1.viewport.Y;
-                    Rectangle destRect = new Rectangle((int)drawX, (int)drawY, 64, 64);
-
-                    // 绘制一个半透明的蓝色方块代表虚影（进阶版可以绘制物品图标，目前先用方块确认位置）
-                    e.SpriteBatch.Draw(Game1.staminaRect, destRect, Color.Cyan * 0.5f);
-                }
-            }
+            previewItems = this.Helper.Data.ReadJsonFile<List<BlueprintItem>>($"blueprints/{latestFile.Name}");
+            if (previewItems != null) isPreviewMode = true;
         }
 
         private void DrawSelectionBox(SpriteBatch b, Vector2 start, Vector2 end, Color color)
@@ -132,7 +134,6 @@ namespace BlueprintMod
             b.Draw(Game1.staminaRect, rect, color);
         }
 
-        // 保存逻辑保持不变... (SaveBlueprint 方法)
         private void SaveBlueprint(GameLocation location, Vector2 start, Vector2 end)
         {
             List<BlueprintItem> items = new List<BlueprintItem>();
@@ -146,18 +147,11 @@ namespace BlueprintMod
                 if (tile.X >= minX && tile.X <= maxX && tile.Y >= minY && tile.Y <= maxY)
                 {
                     var obj = location.Objects[tile];
-                    items.Add(new BlueprintItem {
-                        ItemId = obj.QualifiedItemId,
-                        TileX = tile.X - minX,
-                        TileY = tile.Y - minY,
-                        Name = obj.DisplayName
-                    });
+                    items.Add(new BlueprintItem { ItemId = obj.QualifiedItemId, TileX = tile.X - minX, TileY = tile.Y - minY, Name = obj.DisplayName });
                 }
             }
-            if (items.Count > 0) {
+            if (items.Count > 0)
                 this.Helper.Data.WriteJsonFile($"blueprints/blueprint_{DateTime.Now:yyyyMMdd_HHmmss}.json", items);
-                this.Monitor.Log($"已保存 {items.Count} 个物品。", LogLevel.Info);
-            }
         }
     }
 
