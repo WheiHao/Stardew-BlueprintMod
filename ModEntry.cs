@@ -187,11 +187,22 @@ namespace BlueprintMod
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
-                Item newItem = ItemRegistry.Create(item.ItemId);
-                if (newItem is StardewValley.Object obj)
+                
+                if (item.ItemType == "Flooring")
                 {
-                    obj.TileLocation = targetTile;
-                    Game1.currentLocation.Objects.Add(targetTile, obj);
+                    if (!Game1.currentLocation.terrainFeatures.ContainsKey(targetTile))
+                    {
+                        Game1.currentLocation.terrainFeatures.Add(targetTile, new StardewValley.TerrainFeatures.Flooring(item.ItemId));
+                    }
+                }
+                else
+                {
+                    Item newItem = ItemRegistry.Create(item.ItemId);
+                    if (newItem is StardewValley.Object obj)
+                    {
+                        obj.TileLocation = targetTile;
+                        Game1.currentLocation.Objects.Add(targetTile, obj);
+                    }
                 }
             }
         }
@@ -201,6 +212,10 @@ namespace BlueprintMod
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
+                // 这里我们存储 ItemId，但也需要一种方式记住它是地板
+                // 简单起见，如果 ID 以 (O) 开头通常是 Object，但地板 ID 可能不同
+                // 为了健壮性，我们可以把 ID 编码一下，或者使用更复杂的数据结构
+                // 这里我们采用简单方案：如果 terrainFeatures 里有东西，它就是地板虚影的处理范围
                 placedGhosts[targetTile] = item.ItemId;
             }
         }
@@ -212,11 +227,32 @@ namespace BlueprintMod
                 string requiredId = placedGhosts[tile];
                 if (Game1.player.ActiveItem?.QualifiedItemId == requiredId)
                 {
-                    Game1.player.reduceActiveItemByOne();
-                    Game1.currentLocation.Objects.Add(tile, (StardewValley.Object)ItemRegistry.Create(requiredId));
-                    placedGhosts.Remove(tile);
-                    Game1.playSound("dirtyHit");
-                    Helper.Input.Suppress(SButton.MouseLeft);
+                    bool placed = false;
+                    // 尝试作为地板放置
+                    var itemData = ItemRegistry.GetData(requiredId);
+                    if (itemData?.ObjectType == "Flooring" || requiredId.Contains("Path") || requiredId.Contains("Floor"))
+                    {
+                        if (!Game1.currentLocation.terrainFeatures.ContainsKey(tile))
+                        {
+                            Game1.currentLocation.terrainFeatures.Add(tile, new StardewValley.TerrainFeatures.Flooring(requiredId));
+                            placed = true;
+                        }
+                    }
+                    
+                    // 如果不是地板或地板放置失败，尝试作为普通物体放置
+                    if (!placed && !Game1.currentLocation.Objects.ContainsKey(tile))
+                    {
+                        Game1.currentLocation.Objects.Add(tile, (StardewValley.Object)ItemRegistry.Create(requiredId));
+                        placed = true;
+                    }
+
+                    if (placed)
+                    {
+                        Game1.player.reduceActiveItemByOne();
+                        placedGhosts.Remove(tile);
+                        Game1.playSound("dirtyHit");
+                        Helper.Input.Suppress(SButton.MouseLeft);
+                    }
                 }
             }
         }
@@ -247,6 +283,7 @@ namespace BlueprintMod
             int minY = (int)Math.Min(start.Y, end.Y);
             int maxY = (int)Math.Max(start.Y, end.Y);
 
+            // 保存普通物体
             foreach (var tile in location.Objects.Keys)
             {
                 if (tile.X >= minX && tile.X <= maxX && tile.Y >= minY && tile.Y <= maxY)
@@ -256,15 +293,40 @@ namespace BlueprintMod
                         ItemId = obj.QualifiedItemId, 
                         TileX = tile.X - minX, 
                         TileY = tile.Y - minY, 
-                        Name = obj.DisplayName 
+                        Name = obj.DisplayName,
+                        ItemType = "Object"
                     });
                 }
             }
+
+            // 保存地板/道路
+            foreach (var pair in location.terrainFeatures.Pairs)
+            {
+                Vector2 tile = pair.Key;
+                if (tile.X >= minX && tile.X <= maxX && tile.Y >= minY && tile.Y <= maxY)
+                {
+                    if (pair.Value is StardewValley.TerrainFeatures.Flooring flooring)
+                    {
+                        string itemId = flooring.GetData()?.ItemId;
+                        if (itemId != null)
+                        {
+                            items.Add(new BlueprintItem {
+                                ItemId = "(O)" + itemId, // 保持 QualifiedID 格式
+                                TileX = tile.X - minX,
+                                TileY = tile.Y - minY,
+                                Name = "Flooring",
+                                ItemType = "Flooring"
+                            });
+                        }
+                    }
+                }
+            }
+
             if (items.Count > 0)
             {
                 string path = $"blueprints/blueprint_{DateTime.Now:yyyyMMdd_HHmmss}.json";
                 this.Helper.Data.WriteJsonFile(path, items);
-                Game1.showGlobalMessage($"蓝图已保存: {path}");
+                Game1.showGlobalMessage($"蓝图已保存: {path} (包含 {items.Count} 个项目)");
             }
         }
 
@@ -304,5 +366,6 @@ namespace BlueprintMod
         public float TileX { get; set; }
         public float TileY { get; set; }
         public string Name { get; set; }
+        public string ItemType { get; set; } = "Object";
     }
 }
