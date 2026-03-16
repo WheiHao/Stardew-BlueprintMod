@@ -5,6 +5,7 @@ using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
 using StardewValley.ItemTypeDefinitions;
+using StardewValley.Menus;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -23,11 +24,13 @@ namespace BlueprintMod
         private bool isCreativeMode = false;
         private bool isOverwriteMode = true;
 
+        private Vector2? pendingTile = null;
+
         public override void Entry(IModHelper helper)
         {
             helper.Events.Input.ButtonPressed += OnButtonPressed;
             helper.Events.Display.RenderedWorld += OnRenderedWorld;
-            helper.Events.Display.RenderedHud += OnRenderedHud; // 新增：用于绘制 HUD
+            helper.Events.Display.RenderedHud += OnRenderedHud;
             helper.Events.GameLoop.UpdateTicked += OnUpdateTicked;
         }
 
@@ -49,6 +52,9 @@ namespace BlueprintMod
 
         private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
         {
+            // 如果当前有菜单或对话框打开，不处理 Mod 逻辑 (防止无限弹窗)
+            if (Game1.activeClickableMenu != null) return;
+
             if (Helper.Input.IsDown(SButton.LeftControl) && (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight)) Helper.Input.Suppress(e.Button);
 
             if (e.Button == SButton.K)
@@ -112,8 +118,49 @@ namespace BlueprintMod
                 }
             }
 
-            if (hasCollision) { Game1.playSound("cancel"); Game1.showRedMessage("无法放置：安全模式拦截了碰撞地块！"); }
-            else { if (isCreativeMode) PlaceBlueprintReal(mouseTile); else PlaceGhosts(mouseTile); isPreviewMode = false; previewItems = null; Game1.playSound("purchase"); }
+            if (hasCollision) { Game1.playSound("cancel"); Game1.showRedMessage("无法放置：安全模式拦截了碰撞地块！"); return; }
+
+            if (!isCreativeMode)
+            {
+                var requirements = previewItems.GroupBy(i => i.ItemId).Select(g => new { ItemId = g.Key, Count = g.Count() }).ToList();
+                bool hasEverything = requirements.All(req => Game1.player.Items.CountId(req.ItemId) >= req.Count);
+
+                if (hasEverything)
+                {
+                    pendingTile = mouseTile;
+                    // 提前保存清单并关闭预览模式，防止弹窗点击时再次触发
+                    var savedRequirements = requirements;
+                    var savedPreviewItems = previewItems;
+                    isPreviewMode = false;
+                    previewItems = null;
+
+                    Game1.currentLocation.createQuestionDialogue(
+                        "检测到背包含有全部所需材料，是否立即扣除并一键放置蓝图？",
+                        Game1.currentLocation.createYesNoResponses(),
+                        (who, answer) => {
+                            if (answer == "Yes")
+                            {
+                                foreach (var req in savedRequirements) Game1.player.Items.ReduceId(req.ItemId, req.Count);
+                                // 临时恢复 previewItems 以执行 PlaceBlueprintReal
+                                previewItems = savedPreviewItems;
+                                PlaceBlueprintReal(pendingTile.Value);
+                                previewItems = null;
+                                Game1.playSound("purchase");
+                            }
+                            else
+                            {
+                                previewItems = savedPreviewItems;
+                                PlaceGhosts(pendingTile.Value);
+                                previewItems = null;
+                            }
+                        }
+                    );
+                    return;
+                }
+            }
+
+            if (isCreativeMode) PlaceBlueprintReal(mouseTile); else PlaceGhosts(mouseTile);
+            isPreviewMode = false; previewItems = null; Game1.playSound("purchase");
         }
 
         private bool IsDebris(StardewValley.Object obj)
@@ -127,8 +174,6 @@ namespace BlueprintMod
         private void OnRenderedWorld(object sender, RenderedWorldEventArgs e)
         {
             if (startTile.HasValue) DrawSelectionBox(e.SpriteBatch, startTile.Value, Helper.Input.GetCursorPosition().Tile, Color.White * 0.3f);
-            
-            // 世界空间渲染：只画虚影和框
             if (isPreviewMode && previewItems != null)
             {
                 Vector2 mouseTile = new Vector2((int)Helper.Input.GetCursorPosition().Tile.X, (int)Helper.Input.GetCursorPosition().Tile.Y);
@@ -159,51 +204,32 @@ namespace BlueprintMod
             foreach (var ghost in placedGhosts) DrawGhost(e.SpriteBatch, ghost.Key, ghost.Value, 0.4f, Color.White * 0.6f);
         }
 
-        // 屏幕空间渲染：画清单和状态文字
         private void OnRenderedHud(object sender, RenderedHudEventArgs e)
         {
             if (isPreviewMode && previewItems != null)
             {
-                // 绘制顶部状态
                 string topText = $"蓝图: {blueprintFiles[currentBlueprintIndex].Name} ({(isOverwriteMode ? "覆盖开启" : "安全模式")})";
                 e.SpriteBatch.DrawString(Game1.dialogueFont, topText, new Vector2(80, 80), Color.White);
-
-                // 绘制所需物资清单
                 DrawShoppingList(e.SpriteBatch);
             }
         }
 
         private void DrawShoppingList(SpriteBatch b)
         {
-            if (previewItems == null || previewItems.Count == 0) return;
-
-            var requirements = previewItems.GroupBy(i => i.ItemId)
-                                         .Select(g => new { 
-                                             ItemId = g.Key, 
-                                             RequiredCount = g.Count(),
-                                             DisplayName = g.First().Name
-                                         }).ToList();
-
-            // 位置：固定在屏幕右侧
-            int xPos = Game1.uiViewport.Width - 300; 
-            int yPos = 150;
-
+            if (previewItems == null) return;
+            var requirements = previewItems.GroupBy(i => i.ItemId).Select(g => new { ItemId = g.Key, RequiredCount = g.Count() }).ToList();
+            int xPos = Game1.uiViewport.Width - 300, yPos = 150;
             b.Draw(Game1.staminaRect, new Rectangle(xPos - 10, yPos - 10, 280, requirements.Count * 40 + 60), Color.Black * 0.5f);
             b.DrawString(Game1.dialogueFont, "所需物资清单:", new Vector2(xPos, yPos), Color.Gold, 0f, Vector2.Zero, 0.8f, SpriteEffects.None, 0f);
             yPos += 40;
-
             foreach (var req in requirements)
             {
                 int playerHas = Game1.player.Items.CountId(req.ItemId);
-                bool isEnough = playerHas >= req.RequiredCount;
-
                 ParsedItemData itemData = ItemRegistry.GetData(req.ItemId);
                 if (itemData != null)
                 {
                     b.Draw(itemData.GetTexture(), new Rectangle(xPos, yPos, 32, 32), itemData.GetSourceRect(), Color.White);
-                    string text = $"{req.RequiredCount} ({playerHas})";
-                    Color textColor = isEnough ? Color.White : Color.Red;
-                    b.DrawString(Game1.smallFont, text, new Vector2(xPos + 40, yPos + 4), textColor);
+                    b.DrawString(Game1.smallFont, $"{req.RequiredCount} ({playerHas})", new Vector2(xPos + 40, yPos + 4), playerHas >= req.RequiredCount ? Color.White : Color.Red);
                     yPos += 35;
                 }
             }
@@ -211,6 +237,7 @@ namespace BlueprintMod
 
         private void PlaceBlueprintReal(Vector2 origin)
         {
+            if (previewItems == null) return;
             var sortedItems = previewItems.OrderBy(i => i.ItemType == "Object" ? 1 : 0).ToList();
             foreach (var item in sortedItems)
             {
@@ -235,6 +262,7 @@ namespace BlueprintMod
 
         private void PlaceGhosts(Vector2 origin)
         {
+            if (previewItems == null) return;
             foreach (var item in previewItems) placedGhosts[new Vector2(origin.X + item.TileX, origin.Y + item.TileY)] = item.ItemId;
         }
 
@@ -248,7 +276,7 @@ namespace BlueprintMod
                 {
                     if (!Game1.currentLocation.terrainFeatures.ContainsKey(tile))
                     {
-                        string fId = previewItems?.FirstOrDefault(i => i.ItemId == reqId)?.FlooringId ?? reqId.Replace("(O)", "");
+                        string fId = reqId.Replace("(O)", ""); // 由于填充时没有预览列表，这里退回到解析 ID
                         Game1.currentLocation.terrainFeatures.Add(tile, new StardewValley.TerrainFeatures.Flooring(fId));
                         placed = true;
                     }
