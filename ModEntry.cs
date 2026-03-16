@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
@@ -31,7 +31,6 @@ namespace BlueprintMod
 
         private void OnUpdateTicked(object sender, UpdateTickedEventArgs e)
         {
-            // 每 20 刻 (约 0.3 秒) 检查一次，避免性能消耗
             if (!e.IsMultipleOf(20) || placedGhosts.Count == 0 || Game1.currentLocation == null)
                 return;
 
@@ -41,19 +40,16 @@ namespace BlueprintMod
                 Vector2 tile = ghost.Key;
                 string requiredId = ghost.Value;
 
-                // 检查物体
                 if (Game1.currentLocation.Objects.TryGetValue(tile, out var obj) && obj.QualifiedItemId == requiredId)
                 {
                     toRemove.Add(tile);
                     continue;
                 }
 
-                // 检查地板
                 if (Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var feature) && feature is StardewValley.TerrainFeatures.Flooring flooring)
                 {
-                    // 将地板的 ID 转为 QualifiedID 格式进行对比
-                    string flooringId = "(O)" + (flooring.GetData()?.ItemId ?? "");
-                    if (flooringId == requiredId)
+                    string flooringItemId = "(O)" + (flooring.GetData()?.ItemId ?? "");
+                    if (flooringItemId == requiredId)
                     {
                         toRemove.Add(tile);
                     }
@@ -68,7 +64,6 @@ namespace BlueprintMod
 
         private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
         {
-            // 1. 【核心修复】最高优先级拦截：只要按住 Ctrl，彻底屏蔽游戏原版鼠标动作
             if (Helper.Input.IsDown(SButton.LeftControl))
             {
                 if (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight)
@@ -77,7 +72,6 @@ namespace BlueprintMod
                 }
             }
 
-            // 2. 模式切换 (K键)
             if (e.Button == SButton.K)
             {
                 isCreativeMode = !isCreativeMode;
@@ -86,7 +80,6 @@ namespace BlueprintMod
                 return;
             }
 
-            // 2.5 清除所有虚影 (Ctrl + Shift + C)
             if (e.Button == SButton.C && Helper.Input.IsDown(SButton.LeftControl) && Helper.Input.IsDown(SButton.LeftShift))
             {
                 placedGhosts.Clear();
@@ -95,23 +88,19 @@ namespace BlueprintMod
                 return;
             }
 
-            // 3. 虚影拆除逻辑 (Ctrl + 右键)
-            // 注意：坐标必须取整以保证字典匹配的精确度
             if (e.Button == SButton.MouseRight && Helper.Input.IsDown(SButton.LeftControl))
             {
                 Vector2 tile = new Vector2((int)e.Cursor.Tile.X, (int)e.Cursor.Tile.Y);
                 if (placedGhosts.ContainsKey(tile))
                 {
                     placedGhosts.Remove(tile);
-                    Game1.playSound("hammer"); // 播放拆除音效
+                    Game1.playSound("hammer");
                     return;
                 }
             }
 
-            // 4. 预览模式下的放置与切换逻辑
             if (isPreviewMode)
             {
-                // 预览时强制拦截鼠标，防止干扰
                 if (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight)
                     Helper.Input.Suppress(e.Button);
 
@@ -121,25 +110,21 @@ namespace BlueprintMod
                 }
                 else if (e.Button == SButton.MouseRight)
                 {
-                    // 右键退出预览
                     isPreviewMode = false;
                     previewItems = null;
                 }
                 else if (e.Button == SButton.Left || e.Button == SButton.Right)
                 {
-                    // 左右方向键切换蓝图
                     SwitchBlueprint(e.Button == SButton.Right);
                 }
                 return;
             }
 
-            // 5. 生存模式填充逻辑 (非预览、无Ctrl点击时)
             if (!isCreativeMode && e.Button == SButton.MouseLeft && !Helper.Input.IsDown(SButton.LeftControl))
             {
                 HandleGhostFilling(new Vector2((int)e.Cursor.Tile.X, (int)e.Cursor.Tile.Y));
             }
 
-            // 6. 记录蓝图范围 (Ctrl + 左键)
             if (e.Button == SButton.MouseLeft && Helper.Input.IsDown(SButton.LeftControl))
             {
                 if (startTile == null)
@@ -154,29 +139,23 @@ namespace BlueprintMod
                     Game1.playSound("drumkit0");
                 }
             }
-            // 开启预览菜单 (Ctrl + L)
             else if (e.Button == SButton.L && Helper.Input.IsDown(SButton.LeftControl))
             {
                 EnterPreviewMode();
             }
         }
 
-        // 方案 A 核心：全局预检放置逻辑
         private void HandlePlacementAttempt()
         {
             Vector2 mouseTile = Helper.Input.GetCursorPosition().Tile;
             mouseTile = new Vector2((int)mouseTile.X, (int)mouseTile.Y);
             bool hasHardCollision = false;
 
-            // 遍历整个蓝图结构进行扫描
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(mouseTile.X + item.TileX, mouseTile.Y + item.TileY);
-                
-                // 检查是否有“硬障碍”
                 if (Game1.currentLocation.Objects.TryGetValue(targetTile, out var obj))
                 {
-                    // 如果该位置有物体，且它不是杂草、石头、树枝等可清理碎屑
                     if (!IsDebris(obj))
                     {
                         hasHardCollision = true;
@@ -185,7 +164,6 @@ namespace BlueprintMod
                 }
             }
 
-            // 创造模式下无视一切障碍（因为我们会清理），生存模式下只拦截硬障碍
             if (hasHardCollision && !isCreativeMode)
             {
                 Game1.playSound("cancel");
@@ -202,30 +180,20 @@ namespace BlueprintMod
             }
         }
 
-        // 判断是否为可清理的杂物
         private bool IsDebris(StardewValley.Object obj)
         {
-            // 1.6 版本中，可以使用 IsWeeds()，并结合名称判断碎石和枯枝
             if (obj == null) return false;
-            
             string name = obj.Name ?? "";
-            return obj.IsWeeds() 
-                || name.Contains("Stone") 
-                || name.Contains("Twig") 
-                || name.Contains("Weed")
-                || obj.QualifiedItemId == "(O)343" // 常见的石头 ID
-                || obj.QualifiedItemId == "(O)450" // 另一种石头 ID
-                || obj.QualifiedItemId == "(O)294" // 常见的木枝 ID
-                || obj.QualifiedItemId == "(O)295"; // 另一种木枝 ID
+            return obj.IsWeeds() || name.Contains("Stone") || name.Contains("Twig") || name.Contains("Weed")
+                || obj.QualifiedItemId == "(O)343" || obj.QualifiedItemId == "(O)450" 
+                || obj.QualifiedItemId == "(O)294" || obj.QualifiedItemId == "(O)295";
         }
 
         private void OnRenderedWorld(object sender, RenderedWorldEventArgs e)
         {
-            // 绘制选取框
             if (startTile.HasValue)
                 DrawSelectionBox(e.SpriteBatch, startTile.Value, Helper.Input.GetCursorPosition().Tile, Color.White * 0.3f);
 
-            // 绘制放置预览
             if (isPreviewMode && previewItems != null)
             {
                 Vector2 mouseTile = Helper.Input.GetCursorPosition().Tile;
@@ -234,14 +202,11 @@ namespace BlueprintMod
                 foreach (var item in previewItems)
                 {
                     Vector2 targetTile = new Vector2(mouseTile.X + item.TileX, mouseTile.Y + item.TileY);
-                    
                     bool isBlocked = false;
                     if (Game1.currentLocation.Objects.TryGetValue(targetTile, out var obj))
                     {
                         if (!isCreativeMode && !IsDebris(obj)) isBlocked = true;
                     }
-                    
-                    // 红色表示被挡，绿色(创造)或青色(生存)表示可用
                     Color previewColor = isBlocked ? Color.Red * 0.8f : (isCreativeMode ? Color.LightGreen : Color.Cyan);
                     DrawGhost(e.SpriteBatch, targetTile, item.ItemId, 0.5f, previewColor);
                 }
@@ -250,7 +215,6 @@ namespace BlueprintMod
                 e.SpriteBatch.DrawString(Game1.dialogueFont, $"当前蓝图: {fileName}", new Vector2(100, 100), Color.White);
             }
 
-            // 持续渲染已放置的虚影
             foreach (var ghost in placedGhosts)
             {
                 DrawGhost(e.SpriteBatch, ghost.Key, ghost.Value, 0.4f, Color.White * 0.6f);
@@ -262,23 +226,16 @@ namespace BlueprintMod
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
-                
                 if (item.ItemType == "Flooring")
                 {
-                    // 1. 清理该位置的旧地形特征 (杂草、老地砖等)
                     if (Game1.currentLocation.terrainFeatures.ContainsKey(targetTile))
                         Game1.currentLocation.terrainFeatures.Remove(targetTile);
                     
-                    // 2. 移除 (O) 前缀以获取原始 ID
-                    string rawId = item.ItemId;
-                    if (rawId.StartsWith("(O)")) rawId = rawId.Substring(3);
-
-                    // 3. 放置地板
-                    Game1.currentLocation.terrainFeatures.Add(targetTile, new StardewValley.TerrainFeatures.Flooring(rawId));
+                    string fId = !string.IsNullOrEmpty(item.FlooringId) ? item.FlooringId : item.ItemId.Replace("(O)", "");
+                    Game1.currentLocation.terrainFeatures.Add(targetTile, new StardewValley.TerrainFeatures.Flooring(fId));
                 }
                 else
                 {
-                    // 移除旧物体防止重叠
                     if (Game1.currentLocation.Objects.ContainsKey(targetTile))
                         Game1.currentLocation.Objects.Remove(targetTile);
 
@@ -309,23 +266,20 @@ namespace BlueprintMod
                 if (Game1.player.ActiveItem?.QualifiedItemId == requiredId)
                 {
                     bool placed = false;
-                    
-                    // 尝试作为地板放置
                     var itemData = ItemRegistry.GetData(requiredId);
                     if (itemData?.ObjectType == "Flooring" || requiredId.Contains("Path") || requiredId.Contains("Floor"))
                     {
                         if (!Game1.currentLocation.terrainFeatures.ContainsKey(tile))
                         {
-                            // 同样需要移除 (O) 前缀
-                            string rawId = requiredId;
-                            if (rawId.StartsWith("(O)")) rawId = rawId.Substring(3);
+                            string fId = null;
+                            if (previewItems != null) fId = previewItems.FirstOrDefault(i => i.ItemId == requiredId)?.FlooringId;
+                            if (string.IsNullOrEmpty(fId)) fId = requiredId.Replace("(O)", "");
 
-                            Game1.currentLocation.terrainFeatures.Add(tile, new StardewValley.TerrainFeatures.Flooring(rawId));
+                            Game1.currentLocation.terrainFeatures.Add(tile, new StardewValley.TerrainFeatures.Flooring(fId));
                             placed = true;
                         }
                     }
                     
-                    // 如果不是地板或地板放置失败，尝试作为普通物体放置
                     if (!placed && !Game1.currentLocation.Objects.ContainsKey(tile))
                     {
                         Game1.currentLocation.Objects.Add(tile, (StardewValley.Object)ItemRegistry.Create(requiredId));
@@ -369,7 +323,6 @@ namespace BlueprintMod
             int minY = (int)Math.Min(start.Y, end.Y);
             int maxY = (int)Math.Max(start.Y, end.Y);
 
-            // 保存普通物体
             foreach (var tile in location.Objects.Keys)
             {
                 if (tile.X >= minX && tile.X <= maxX && tile.Y >= minY && tile.Y <= maxY)
@@ -385,7 +338,6 @@ namespace BlueprintMod
                 }
             }
 
-            // 保存地板/道路
             foreach (var pair in location.terrainFeatures.Pairs)
             {
                 Vector2 tile = pair.Key;
@@ -394,10 +346,12 @@ namespace BlueprintMod
                     if (pair.Value is StardewValley.TerrainFeatures.Flooring flooring)
                     {
                         string itemId = flooring.GetData()?.ItemId;
+                        string internalId = flooring.whichFloor.Value; // 修正：在 1.6 中使用 whichFloor.Value
                         if (itemId != null)
                         {
                             items.Add(new BlueprintItem {
-                                ItemId = "(O)" + itemId, // 保持 QualifiedID 格式
+                                ItemId = "(O)" + itemId,
+                                FlooringId = internalId,
                                 TileX = tile.X - minX,
                                 TileY = tile.Y - minY,
                                 Name = "Flooring",
@@ -420,7 +374,6 @@ namespace BlueprintMod
         {
             string folderPath = Path.Combine(this.Helper.DirectoryPath, "blueprints");
             if (!Directory.Exists(folderPath)) Directory.CreateDirectory(folderPath);
-            
             blueprintFiles = new DirectoryInfo(folderPath).GetFiles("*.json").OrderByDescending(f => f.LastWriteTime).ToList();
             if (blueprintFiles.Count == 0)
             {
@@ -449,6 +402,7 @@ namespace BlueprintMod
     public class BlueprintItem
     {
         public string ItemId { get; set; }
+        public string FlooringId { get; set; }
         public float TileX { get; set; }
         public float TileY { get; set; }
         public string Name { get; set; }
