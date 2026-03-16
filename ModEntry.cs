@@ -226,8 +226,14 @@ namespace BlueprintMod
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
+                
+                // 核心修复：无论放置什么，先强行清理该格子的所有普通物体 (碎石、木棍、杂草等)
+                if (Game1.currentLocation.Objects.ContainsKey(targetTile))
+                    Game1.currentLocation.Objects.Remove(targetTile);
+
                 if (item.ItemType == "Flooring")
                 {
+                    // 清理该位置的地形特征 (如旧地砖、草丛)
                     if (Game1.currentLocation.terrainFeatures.ContainsKey(targetTile))
                         Game1.currentLocation.terrainFeatures.Remove(targetTile);
                     
@@ -236,9 +242,7 @@ namespace BlueprintMod
                 }
                 else
                 {
-                    if (Game1.currentLocation.Objects.ContainsKey(targetTile))
-                        Game1.currentLocation.Objects.Remove(targetTile);
-
+                    // 放置物体逻辑（上面已经清理过旧物体了）
                     Item newItem = ItemRegistry.Create(item.ItemId);
                     if (newItem is StardewValley.Object obj)
                     {
