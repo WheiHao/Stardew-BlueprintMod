@@ -27,6 +27,7 @@ namespace BlueprintMod
         {
             helper.Events.Input.ButtonPressed += OnButtonPressed;
             helper.Events.Display.RenderedWorld += OnRenderedWorld;
+            helper.Events.Display.RenderedHud += OnRenderedHud; // 新增：用于绘制 HUD
             helper.Events.GameLoop.UpdateTicked += OnUpdateTicked;
         }
 
@@ -89,52 +90,30 @@ namespace BlueprintMod
             Vector2 mouseTile = new Vector2((int)Helper.Input.GetCursorPosition().Tile.X, (int)Helper.Input.GetCursorPosition().Tile.Y);
             bool hasCollision = false;
 
-            // 1. 只有在安全模式下才进行严格碰撞检测
             if (!isOverwriteMode)
             {
-                // 检测整个蓝图覆盖的矩形区域
                 for (int x = 0; x < currentMetadata.Width; x++)
                 {
                     for (int y = 0; y < currentMetadata.Height; y++)
                     {
                         Vector2 targetTile = new Vector2(mouseTile.X + x, mouseTile.Y + y);
                         var itemAtTile = previewItems.FirstOrDefault(i => (int)i.TileX == x && (int)i.TileY == y);
-
-                        // 检查物体
-                        if (Game1.currentLocation.Objects.TryGetValue(targetTile, out var worldObj))
-                        {
-                            if (!IsDebris(worldObj)) { hasCollision = true; break; }
-                        }
-                        // 检查地形 (地砖等)
+                        if (Game1.currentLocation.Objects.TryGetValue(targetTile, out var worldObj) && !IsDebris(worldObj)) { hasCollision = true; break; }
                         if (Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature))
                         {
-                            if (feature is StardewValley.TerrainFeatures.Flooring worldFlooring)
+                            if (feature is StardewValley.TerrainFeatures.Flooring wf)
                             {
-                                // 如果蓝图在此处要放地砖，且地砖样式不同，则视为冲突
-                                if (itemAtTile != null && itemAtTile.ItemType == "Flooring")
-                                {
-                                    if (worldFlooring.whichFloor.Value != itemAtTile.FlooringId) { hasCollision = true; break; }
-                                }
-                                // 如果蓝图在此处要放物体，地砖不冲突（原版允许）
+                                if (itemAtTile != null && itemAtTile.ItemType == "Flooring" && wf.whichFloor.Value != itemAtTile.FlooringId) { hasCollision = true; break; }
                             }
-                            else { hasCollision = true; break; } // 树、耕地等视为冲突
+                            else { hasCollision = true; break; }
                         }
                     }
                     if (hasCollision) break;
                 }
             }
 
-            if (hasCollision)
-            {
-                Game1.playSound("cancel");
-                Game1.showRedMessage("无法放置：安全模式拦截了碰撞地块！");
-            }
-            else
-            {
-                if (isCreativeMode) PlaceBlueprintReal(mouseTile);
-                else PlaceGhosts(mouseTile);
-                isPreviewMode = false; previewItems = null; Game1.playSound("purchase");
-            }
+            if (hasCollision) { Game1.playSound("cancel"); Game1.showRedMessage("无法放置：安全模式拦截了碰撞地块！"); }
+            else { if (isCreativeMode) PlaceBlueprintReal(mouseTile); else PlaceGhosts(mouseTile); isPreviewMode = false; previewItems = null; Game1.playSound("purchase"); }
         }
 
         private bool IsDebris(StardewValley.Object obj)
@@ -148,6 +127,8 @@ namespace BlueprintMod
         private void OnRenderedWorld(object sender, RenderedWorldEventArgs e)
         {
             if (startTile.HasValue) DrawSelectionBox(e.SpriteBatch, startTile.Value, Helper.Input.GetCursorPosition().Tile, Color.White * 0.3f);
+            
+            // 世界空间渲染：只画虚影和框
             if (isPreviewMode && previewItems != null)
             {
                 Vector2 mouseTile = new Vector2((int)Helper.Input.GetCursorPosition().Tile.X, (int)Helper.Input.GetCursorPosition().Tile.Y);
@@ -157,7 +138,6 @@ namespace BlueprintMod
                     {
                         Vector2 targetTile = new Vector2(mouseTile.X + x, mouseTile.Y + y);
                         var item = previewItems.FirstOrDefault(i => (int)i.TileX == x && (int)i.TileY == y);
-                        
                         bool isBlocked = false;
                         if (!isOverwriteMode)
                         {
@@ -171,14 +151,62 @@ namespace BlueprintMod
                                 else isBlocked = true;
                             }
                         }
-
                         if (item != null) DrawGhost(e.SpriteBatch, targetTile, item.ItemId, 0.5f, isBlocked ? Color.Red * 0.8f : (isCreativeMode ? Color.LightGreen : Color.Cyan));
-                        else if (isBlocked) DrawSelectionBox(e.SpriteBatch, targetTile, targetTile, Color.Red * 0.2f); // 空白地块冲突显示
+                        else if (isBlocked) DrawSelectionBox(e.SpriteBatch, targetTile, targetTile, Color.Red * 0.2f);
                     }
                 }
-                e.SpriteBatch.DrawString(Game1.dialogueFont, $"蓝图: {blueprintFiles[currentBlueprintIndex].Name} ({(isOverwriteMode ? "覆盖" : "安全")})", new Vector2(100, 100), Color.White);
             }
             foreach (var ghost in placedGhosts) DrawGhost(e.SpriteBatch, ghost.Key, ghost.Value, 0.4f, Color.White * 0.6f);
+        }
+
+        // 屏幕空间渲染：画清单和状态文字
+        private void OnRenderedHud(object sender, RenderedHudEventArgs e)
+        {
+            if (isPreviewMode && previewItems != null)
+            {
+                // 绘制顶部状态
+                string topText = $"蓝图: {blueprintFiles[currentBlueprintIndex].Name} ({(isOverwriteMode ? "覆盖开启" : "安全模式")})";
+                e.SpriteBatch.DrawString(Game1.dialogueFont, topText, new Vector2(80, 80), Color.White);
+
+                // 绘制所需物资清单
+                DrawShoppingList(e.SpriteBatch);
+            }
+        }
+
+        private void DrawShoppingList(SpriteBatch b)
+        {
+            if (previewItems == null || previewItems.Count == 0) return;
+
+            var requirements = previewItems.GroupBy(i => i.ItemId)
+                                         .Select(g => new { 
+                                             ItemId = g.Key, 
+                                             RequiredCount = g.Count(),
+                                             DisplayName = g.First().Name
+                                         }).ToList();
+
+            // 位置：固定在屏幕右侧
+            int xPos = Game1.uiViewport.Width - 300; 
+            int yPos = 150;
+
+            b.Draw(Game1.staminaRect, new Rectangle(xPos - 10, yPos - 10, 280, requirements.Count * 40 + 60), Color.Black * 0.5f);
+            b.DrawString(Game1.dialogueFont, "所需物资清单:", new Vector2(xPos, yPos), Color.Gold, 0f, Vector2.Zero, 0.8f, SpriteEffects.None, 0f);
+            yPos += 40;
+
+            foreach (var req in requirements)
+            {
+                int playerHas = Game1.player.Items.CountId(req.ItemId);
+                bool isEnough = playerHas >= req.RequiredCount;
+
+                ParsedItemData itemData = ItemRegistry.GetData(req.ItemId);
+                if (itemData != null)
+                {
+                    b.Draw(itemData.GetTexture(), new Rectangle(xPos, yPos, 32, 32), itemData.GetSourceRect(), Color.White);
+                    string text = $"{req.RequiredCount} ({playerHas})";
+                    Color textColor = isEnough ? Color.White : Color.Red;
+                    b.DrawString(Game1.smallFont, text, new Vector2(xPos + 40, yPos + 4), textColor);
+                    yPos += 35;
+                }
+            }
         }
 
         private void PlaceBlueprintReal(Vector2 origin)
