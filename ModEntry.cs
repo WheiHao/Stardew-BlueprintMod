@@ -21,6 +21,7 @@ namespace BlueprintMod
         private int currentBlueprintIndex = 0;
         private Dictionary<Vector2, string> placedGhosts = new Dictionary<Vector2, string>();
         private bool isCreativeMode = false;
+        private bool isOverwriteMode = true;
 
         public override void Entry(IModHelper helper)
         {
@@ -77,6 +78,14 @@ namespace BlueprintMod
                 isCreativeMode = !isCreativeMode;
                 string modeName = isCreativeMode ? "创造模式" : "生存模式";
                 Game1.addHUDMessage(new HUDMessage($"蓝图模式: {modeName}", 3));
+                return;
+            }
+
+            if (e.Button == SButton.O)
+            {
+                isOverwriteMode = !isOverwriteMode;
+                string modeStatus = isOverwriteMode ? "开启 (强力清理)" : "关闭 (安全规划)";
+                Game1.addHUDMessage(new HUDMessage($"覆盖模式: {modeStatus}", 3));
                 return;
             }
 
@@ -154,20 +163,30 @@ namespace BlueprintMod
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(mouseTile.X + item.TileX, mouseTile.Y + item.TileY);
+                
                 if (Game1.currentLocation.Objects.TryGetValue(targetTile, out var obj))
                 {
-                    if (!IsDebris(obj))
+                    if (isOverwriteMode)
+                    {
+                        if (!IsDebris(obj)) { /* 覆盖模式下不阻挡放置 */ }
+                    }
+                    else
                     {
                         hasHardCollision = true;
-                        break; 
+                        break;
                     }
+                }
+                else if (!isOverwriteMode && Game1.currentLocation.terrainFeatures.ContainsKey(targetTile))
+                {
+                    hasHardCollision = true;
+                    break;
                 }
             }
 
             if (hasHardCollision && !isCreativeMode)
             {
                 Game1.playSound("cancel");
-                Game1.showRedMessage("无法放置：蓝图范围内存在永久性障碍物！");
+                Game1.showRedMessage("无法放置：当前位置已存在物体！");
             }
             else
             {
@@ -203,16 +222,24 @@ namespace BlueprintMod
                 {
                     Vector2 targetTile = new Vector2(mouseTile.X + item.TileX, mouseTile.Y + item.TileY);
                     bool isBlocked = false;
+                    
                     if (Game1.currentLocation.Objects.TryGetValue(targetTile, out var obj))
                     {
-                        if (!isCreativeMode && !IsDebris(obj)) isBlocked = true;
+                        if (!isOverwriteMode) isBlocked = true;
+                        else if (!IsDebris(obj)) isBlocked = true; // 覆盖模式仅提示硬障碍
                     }
+                    else if (!isOverwriteMode && Game1.currentLocation.terrainFeatures.ContainsKey(targetTile))
+                    {
+                        isBlocked = true;
+                    }
+
                     Color previewColor = isBlocked ? Color.Red * 0.8f : (isCreativeMode ? Color.LightGreen : Color.Cyan);
                     DrawGhost(e.SpriteBatch, targetTile, item.ItemId, 0.5f, previewColor);
                 }
                 
                 string fileName = blueprintFiles[currentBlueprintIndex].Name;
-                e.SpriteBatch.DrawString(Game1.dialogueFont, $"当前蓝图: {fileName}", new Vector2(100, 100), Color.White);
+                string modeText = isOverwriteMode ? "覆盖开启" : "安全模式";
+                e.SpriteBatch.DrawString(Game1.dialogueFont, $"当前蓝图: {fileName} ({modeText})", new Vector2(100, 100), Color.White);
             }
 
             foreach (var ghost in placedGhosts)
@@ -223,26 +250,32 @@ namespace BlueprintMod
 
         private void PlaceBlueprintReal(Vector2 origin)
         {
-            foreach (var item in previewItems)
+            // 排序：先放地板，后放物体
+            var sortedItems = previewItems.OrderBy(i => i.ItemType == "Object" ? 1 : 0).ToList();
+
+            foreach (var item in sortedItems)
             {
                 Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
                 
-                // 核心修复：无论放置什么，先强行清理该格子的所有普通物体 (碎石、木棍、杂草等)
-                if (Game1.currentLocation.Objects.ContainsKey(targetTile))
-                    Game1.currentLocation.Objects.Remove(targetTile);
-
                 if (item.ItemType == "Flooring")
                 {
-                    // 清理该位置的地形特征 (如旧地砖、草丛)
-                    if (Game1.currentLocation.terrainFeatures.ContainsKey(targetTile))
-                        Game1.currentLocation.terrainFeatures.Remove(targetTile);
+                    if (isOverwriteMode)
+                    {
+                        if (Game1.currentLocation.Objects.ContainsKey(targetTile))
+                            Game1.currentLocation.Objects.Remove(targetTile);
+                        if (Game1.currentLocation.terrainFeatures.ContainsKey(targetTile))
+                            Game1.currentLocation.terrainFeatures.Remove(targetTile);
+                    }
                     
                     string fId = !string.IsNullOrEmpty(item.FlooringId) ? item.FlooringId : item.ItemId.Replace("(O)", "");
-                    Game1.currentLocation.terrainFeatures.Add(targetTile, new StardewValley.TerrainFeatures.Flooring(fId));
+                    if (!Game1.currentLocation.terrainFeatures.ContainsKey(targetTile))
+                        Game1.currentLocation.terrainFeatures.Add(targetTile, new StardewValley.TerrainFeatures.Flooring(fId));
                 }
                 else
                 {
-                    // 放置物体逻辑（上面已经清理过旧物体了）
+                    if (isOverwriteMode && Game1.currentLocation.Objects.ContainsKey(targetTile))
+                        Game1.currentLocation.Objects.Remove(targetTile);
+
                     Item newItem = ItemRegistry.Create(item.ItemId);
                     if (newItem is StardewValley.Object obj)
                     {
@@ -278,7 +311,6 @@ namespace BlueprintMod
                             string fId = null;
                             if (previewItems != null) fId = previewItems.FirstOrDefault(i => i.ItemId == requiredId)?.FlooringId;
                             if (string.IsNullOrEmpty(fId)) fId = requiredId.Replace("(O)", "");
-
                             Game1.currentLocation.terrainFeatures.Add(tile, new StardewValley.TerrainFeatures.Flooring(fId));
                             placed = true;
                         }
@@ -350,7 +382,7 @@ namespace BlueprintMod
                     if (pair.Value is StardewValley.TerrainFeatures.Flooring flooring)
                     {
                         string itemId = flooring.GetData()?.ItemId;
-                        string internalId = flooring.whichFloor.Value; // 修正：在 1.6 中使用 whichFloor.Value
+                        string internalId = flooring.whichFloor.Value;
                         if (itemId != null)
                         {
                             items.Add(new BlueprintItem {
