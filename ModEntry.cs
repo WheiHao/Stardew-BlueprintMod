@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
@@ -55,6 +55,25 @@ namespace BlueprintMod
             // 如果当前有菜单或对话框打开，不处理 Mod 逻辑 (防止无限弹窗)
             if (Game1.activeClickableMenu != null) return;
 
+            if (e.Button == SButton.Escape)
+            {
+                if (startTile != null)
+                {
+                    startTile = null;
+                    Game1.addHUDMessage(new HUDMessage("已取消区域框选", 3));
+                    Helper.Input.Suppress(e.Button);
+                    return;
+                }
+                else if (isPreviewMode)
+                {
+                    isPreviewMode = false;
+                    previewItems = null;
+                    Game1.addHUDMessage(new HUDMessage("已退出蓝图预览", 3));
+                    Helper.Input.Suppress(e.Button);
+                    return;
+                }
+            }
+
             if (Helper.Input.IsDown(SButton.LeftControl) && (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight)) Helper.Input.Suppress(e.Button);
 
             if (e.Button == SButton.K)
@@ -76,17 +95,25 @@ namespace BlueprintMod
             {
                 if (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight) Helper.Input.Suppress(e.Button);
                 if (e.Button == SButton.MouseLeft) HandlePlacementAttempt();
-                else if (e.Button == SButton.MouseRight) { isPreviewMode = false; previewItems = null; }
+                else if (e.Button == SButton.MouseRight) { isPreviewMode = false; previewItems = null; Game1.addHUDMessage(new HUDMessage("已退出蓝图预览", 3)); }
                 else if (e.Button == SButton.Left || e.Button == SButton.Right) SwitchBlueprint(e.Button == SButton.Right);
             }
             else if (!isCreativeMode && e.Button == SButton.MouseLeft && !Helper.Input.IsDown(SButton.LeftControl))
             {
                 HandleGhostFilling(new Vector2((int)e.Cursor.Tile.X, (int)e.Cursor.Tile.Y));
             }
-            else if (e.Button == SButton.MouseLeft && Helper.Input.IsDown(SButton.LeftControl))
+            else if (Helper.Input.IsDown(SButton.LeftControl) && (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight))
             {
-                if (startTile == null) { startTile = e.Cursor.Tile; Game1.addHUDMessage(new HUDMessage("起始点已设定", 3)); }
-                else { SaveBlueprint(Game1.currentLocation, startTile.Value, e.Cursor.Tile); startTile = null; Game1.playSound("drumkit0"); }
+                if (e.Button == SButton.MouseLeft)
+                {
+                    if (startTile == null) { startTile = e.Cursor.Tile; Game1.addHUDMessage(new HUDMessage("起始点已设定", 3)); }
+                    else { SaveBlueprint(Game1.currentLocation, startTile.Value, e.Cursor.Tile); startTile = null; Game1.playSound("drumkit0"); }
+                }
+                else if (e.Button == SButton.MouseRight && startTile != null)
+                {
+                    startTile = null;
+                    Game1.addHUDMessage(new HUDMessage("已取消区域框选", 3));
+                }
             }
             else if (e.Button == SButton.L && Helper.Input.IsDown(SButton.LeftControl)) EnterPreviewMode();
         }
@@ -135,7 +162,7 @@ namespace BlueprintMod
                     previewItems = null;
 
                     Game1.currentLocation.createQuestionDialogue(
-                        "检测到背包含有全部所需材料，是否立即扣除并一键放置蓝图？",
+                        "检测到背包含有足够所需材料，是否消耗并一键放置蓝图？",
                         Game1.currentLocation.createYesNoResponses(),
                         (who, answer) => {
                             if (answer == "Yes")
