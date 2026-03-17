@@ -107,7 +107,17 @@ namespace BlueprintMod
                 if (e.Button == SButton.MouseLeft)
                 {
                     if (startTile == null) { startTile = e.Cursor.Tile; Game1.addHUDMessage(new HUDMessage("起始点已设定", 3)); }
-                    else { SaveBlueprint(Game1.currentLocation, startTile.Value, e.Cursor.Tile); startTile = null; Game1.playSound("drumkit0"); }
+                    else
+                    {
+                        Vector2 capturedStart = startTile.Value; // 捕获当前起始点
+                        Vector2 capturedEnd = e.Cursor.Tile;     // 捕获当前结束点
+                        
+                        Game1.activeClickableMenu = new NamingMenu(name => {
+                            SaveBlueprint(Game1.currentLocation, capturedStart, capturedEnd, name);
+                            startTile = null;
+                            Game1.exitActiveMenu(); // 显式关闭命名窗口
+                        }, "命名你的蓝图", "新蓝图");
+                    }
                 }
                 else if (e.Button == SButton.MouseRight && startTile != null)
                 {
@@ -235,7 +245,8 @@ namespace BlueprintMod
         {
             if (isPreviewMode && previewItems != null)
             {
-                string topText = $"蓝图: {blueprintFiles[currentBlueprintIndex].Name} ({(isOverwriteMode ? "覆盖开启" : "安全模式")})";
+                string displayName = currentMetadata?.Name ?? blueprintFiles[currentBlueprintIndex].Name;
+                string topText = $"蓝图: {displayName} ({(isOverwriteMode ? "覆盖开启" : "安全模式")})";
                 e.SpriteBatch.DrawString(Game1.dialogueFont, topText, new Vector2(80, 80), Color.White);
                 DrawShoppingList(e.SpriteBatch);
             }
@@ -329,7 +340,7 @@ namespace BlueprintMod
             b.Draw(Game1.staminaRect, new Rectangle(minX * 64 - Game1.viewport.X, minY * 64 - Game1.viewport.Y, (maxX - minX + 1) * 64, (maxY - minY + 1) * 64), color);
         }
 
-        private void SaveBlueprint(GameLocation location, Vector2 start, Vector2 end)
+        private void SaveBlueprint(GameLocation location, Vector2 start, Vector2 end, string name)
         {
             int minX = (int)Math.Min(start.X, end.X), maxX = (int)Math.Max(start.X, end.X), minY = (int)Math.Min(start.Y, end.Y), maxY = (int)Math.Max(start.Y, end.Y);
             var items = new List<BlueprintItem>();
@@ -340,9 +351,11 @@ namespace BlueprintMod
 
             if (items.Count > 0)
             {
-                var data = new BlueprintFile { Metadata = new BlueprintMetadata { Width = maxX - minX + 1, Height = maxY - minY + 1 }, Items = items };
-                this.Helper.Data.WriteJsonFile($"blueprints/blueprint_{DateTime.Now:yyyyMMdd_HHmmss}.json", data);
-                Game1.showGlobalMessage("蓝图已保存！");
+                string safeName = string.Join("_", name.Split(Path.GetInvalidFileNameChars()));
+                var data = new BlueprintFile { Metadata = new BlueprintMetadata { Name = name, Width = maxX - minX + 1, Height = maxY - minY + 1 }, Items = items };
+                this.Helper.Data.WriteJsonFile($"blueprints/{safeName}_{DateTime.Now:yyyyMMdd_HHmmss}.json", data);
+                Game1.playSound("drumkit0");
+                Game1.showGlobalMessage($"蓝图 '{name}' 已保存！");
             }
         }
 
@@ -357,10 +370,23 @@ namespace BlueprintMod
 
         private void SwitchBlueprint(bool next) { if (blueprintFiles.Count > 1) { currentBlueprintIndex = next ? (currentBlueprintIndex + 1) % blueprintFiles.Count : (currentBlueprintIndex - 1 + blueprintFiles.Count) % blueprintFiles.Count; LoadCurrentBlueprint(); Game1.playSound("shwip"); } }
 
-        private void LoadCurrentBlueprint() { var file = this.Helper.Data.ReadJsonFile<BlueprintFile>($"blueprints/{blueprintFiles[currentBlueprintIndex].Name}"); previewItems = file.Items; currentMetadata = file.Metadata; }
+        private void LoadCurrentBlueprint()
+        {
+            var file = this.Helper.Data.ReadJsonFile<BlueprintFile>($"blueprints/{blueprintFiles[currentBlueprintIndex].Name}");
+            if (file != null && file.Items != null)
+            {
+                previewItems = file.Items;
+                currentMetadata = file.Metadata;
+            }
+            else
+            {
+                Game1.addHUDMessage(new HUDMessage("蓝图文件解析失败", 1));
+                isPreviewMode = false;
+            }
+        }
     }
 
     public class BlueprintFile { public BlueprintMetadata Metadata { get; set; } public List<BlueprintItem> Items { get; set; } }
-    public class BlueprintMetadata { public int Width { get; set; } public int Height { get; set; } }
+    public class BlueprintMetadata { public string Name { get; set; } public int Width { get; set; } public int Height { get; set; } }
     public class BlueprintItem { public string ItemId { get; set; } public string FlooringId { get; set; } public float TileX { get; set; } public float TileY { get; set; } public string Name { get; set; } public string ItemType { get; set; } = "Object"; }
 }
