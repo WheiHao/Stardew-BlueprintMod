@@ -20,7 +20,7 @@ namespace BlueprintMod
         private bool isPreviewMode = false;
         private List<FileInfo> blueprintFiles = new List<FileInfo>();
         private int currentBlueprintIndex = 0;
-        private Dictionary<Vector2, string> placedGhosts = new Dictionary<Vector2, string>();
+        private List<GhostItem> placedGhosts = new List<GhostItem>();
         private bool isCreativeMode = false;
         private bool isOverwriteMode = true;
 
@@ -37,17 +37,15 @@ namespace BlueprintMod
         private void OnUpdateTicked(object sender, UpdateTickedEventArgs e)
         {
             if (!e.IsMultipleOf(20) || placedGhosts.Count == 0 || Game1.currentLocation == null) return;
-            List<Vector2> toRemove = new List<Vector2>();
-            foreach (var ghost in placedGhosts)
-            {
-                Vector2 tile = ghost.Key;
-                if (Game1.currentLocation.Objects.TryGetValue(tile, out var obj) && obj.QualifiedItemId == ghost.Value) toRemove.Add(tile);
-                else if (Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var feature) && feature is StardewValley.TerrainFeatures.Flooring flooring)
+            placedGhosts.RemoveAll(ghost => {
+                Vector2 tile = ghost.Tile;
+                if (Game1.currentLocation.Objects.TryGetValue(tile, out var obj) && obj.QualifiedItemId == ghost.ItemId) return true;
+                if (Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var feature) && feature is StardewValley.TerrainFeatures.Flooring flooring)
                 {
-                    if ("(O)" + (flooring.GetData()?.ItemId ?? "") == ghost.Value) toRemove.Add(tile);
+                    if ("(O)" + (flooring.GetData()?.ItemId ?? "") == ghost.ItemId) return true;
                 }
-            }
-            foreach (var tile in toRemove) placedGhosts.Remove(tile);
+                return false;
+            });
         }
 
         private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
@@ -214,31 +212,50 @@ namespace BlueprintMod
             if (isPreviewMode && previewItems != null)
             {
                 Vector2 mouseTile = new Vector2((int)Helper.Input.GetCursorPosition().Tile.X, (int)Helper.Input.GetCursorPosition().Tile.Y);
+                
+                // 使用 Lookup 处理一个坐标有多个物品的情况（如地板上的洒水器）
+                var itemLookup = previewItems.ToLookup(i => new Vector2(i.TileX, i.TileY));
+
                 for (int x = 0; x < currentMetadata.Width; x++)
                 {
                     for (int y = 0; y < currentMetadata.Height; y++)
                     {
+                        Vector2 relativeTile = new Vector2(x, y);
                         Vector2 targetTile = new Vector2(mouseTile.X + x, mouseTile.Y + y);
-                        var item = previewItems.FirstOrDefault(i => (int)i.TileX == x && (int)i.TileY == y);
-                        bool isBlocked = false;
-                        if (!isOverwriteMode)
+                        var itemsAtTile = itemLookup[relativeTile];
+                        
+                        bool tileBlockedByObject = Game1.currentLocation.Objects.TryGetValue(targetTile, out var worldObj) && !IsDebris(worldObj);
+                        
+                        if (itemsAtTile.Any())
                         {
-                            if (Game1.currentLocation.Objects.TryGetValue(targetTile, out var obj) && !IsDebris(obj)) isBlocked = true;
-                            else if (Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature))
+                            foreach (var item in itemsAtTile)
                             {
-                                if (feature is StardewValley.TerrainFeatures.Flooring wf)
+                                bool isBlocked = false;
+                                if (!isOverwriteMode)
                                 {
-                                    if (item != null && item.ItemType == "Flooring" && wf.whichFloor.Value != item.FlooringId) isBlocked = true;
+                                    if (tileBlockedByObject) isBlocked = true;
+                                    else if (Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature))
+                                    {
+                                        if (feature is StardewValley.TerrainFeatures.Flooring wf)
+                                        {
+                                            if (item.ItemType == "Flooring" && wf.whichFloor.Value != item.FlooringId) isBlocked = true;
+                                        }
+                                        else isBlocked = true;
+                                    }
                                 }
-                                else isBlocked = true;
+                                DrawGhost(e.SpriteBatch, targetTile, item.ItemId, 0.5f, isBlocked ? Color.Red * 0.8f : (isCreativeMode ? Color.LightGreen : Color.Cyan));
                             }
                         }
-                        if (item != null) DrawGhost(e.SpriteBatch, targetTile, item.ItemId, 0.5f, isBlocked ? Color.Red * 0.8f : (isCreativeMode ? Color.LightGreen : Color.Cyan));
-                        else if (isBlocked) DrawSelectionBox(e.SpriteBatch, targetTile, targetTile, Color.Red * 0.2f);
+                        else if (!isOverwriteMode)
+                        {
+                            bool isBlocked = tileBlockedByObject;
+                            if (!isBlocked && Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature) && !(feature is StardewValley.TerrainFeatures.Flooring)) isBlocked = true;
+                            if (isBlocked) DrawSelectionBox(e.SpriteBatch, targetTile, targetTile, Color.Red * 0.2f);
+                        }
                     }
                 }
             }
-            foreach (var ghost in placedGhosts) DrawGhost(e.SpriteBatch, ghost.Key, ghost.Value, 0.4f, Color.White * 0.6f);
+            foreach (var ghost in placedGhosts) DrawGhost(e.SpriteBatch, ghost.Tile, ghost.ItemId, 0.4f, Color.White * 0.6f);
         }
 
         private void OnRenderedHud(object sender, RenderedHudEventArgs e)
@@ -301,20 +318,26 @@ namespace BlueprintMod
         private void PlaceGhosts(Vector2 origin)
         {
             if (previewItems == null) return;
-            foreach (var item in previewItems) placedGhosts[new Vector2(origin.X + item.TileX, origin.Y + item.TileY)] = item.ItemId;
+            foreach (var item in previewItems)
+            {
+                Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
+                placedGhosts.Add(new GhostItem { Tile = targetTile, ItemId = item.ItemId });
+            }
         }
 
         private void HandleGhostFilling(Vector2 tile)
         {
-            if (placedGhosts.TryGetValue(tile, out string reqId) && Game1.player.ActiveItem?.QualifiedItemId == reqId)
+            var ghost = placedGhosts.FirstOrDefault(g => g.Tile == tile && Game1.player.ActiveItem?.QualifiedItemId == g.ItemId);
+            if (ghost != null)
             {
+                string reqId = ghost.ItemId;
                 bool placed = false;
                 var itemData = ItemRegistry.GetData(reqId);
                 if (itemData?.ObjectType == "Flooring" || reqId.Contains("Path") || reqId.Contains("Floor"))
                 {
                     if (!Game1.currentLocation.terrainFeatures.ContainsKey(tile))
                     {
-                        string fId = reqId.Replace("(O)", ""); // 由于填充时没有预览列表，这里退回到解析 ID
+                        string fId = reqId.Replace("(O)", "");
                         Game1.currentLocation.terrainFeatures.Add(tile, new StardewValley.TerrainFeatures.Flooring(fId));
                         placed = true;
                     }
@@ -324,14 +347,28 @@ namespace BlueprintMod
                     Game1.currentLocation.Objects.Add(tile, (StardewValley.Object)ItemRegistry.Create(reqId));
                     placed = true;
                 }
-                if (placed) { Game1.player.reduceActiveItemByOne(); placedGhosts.Remove(tile); Game1.playSound("dirtyHit"); Helper.Input.Suppress(SButton.MouseLeft); }
+                if (placed)
+                {
+                    Game1.player.reduceActiveItemByOne();
+                    placedGhosts.Remove(ghost);
+                    Game1.playSound("dirtyHit");
+                    Helper.Input.Suppress(SButton.MouseLeft);
+                }
             }
         }
 
         private void DrawGhost(SpriteBatch b, Vector2 tile, string itemId, float alpha, Color tint)
         {
             ParsedItemData itemData = ItemRegistry.GetData(itemId);
-            if (itemData != null) b.Draw(itemData.GetTexture(), new Rectangle((int)(tile.X * 64 - Game1.viewport.X), (int)(tile.Y * 64 - Game1.viewport.Y), 64, 64), itemData.GetSourceRect(), tint * alpha);
+            if (itemData != null)
+            {
+                Rectangle sourceRect = itemData.GetSourceRect();
+                int width = sourceRect.Width * 4;
+                int height = sourceRect.Height * 4;
+                int x = (int)(tile.X * 64 - Game1.viewport.X);
+                int y = (int)((tile.Y + 1) * 64 - Game1.viewport.Y - height);
+                b.Draw(itemData.GetTexture(), new Rectangle(x, y, width, height), sourceRect, tint * alpha);
+            }
         }
 
         private void DrawSelectionBox(SpriteBatch b, Vector2 start, Vector2 end, Color color)
@@ -389,4 +426,5 @@ namespace BlueprintMod
     public class BlueprintFile { public BlueprintMetadata Metadata { get; set; } public List<BlueprintItem> Items { get; set; } }
     public class BlueprintMetadata { public string Name { get; set; } public int Width { get; set; } public int Height { get; set; } }
     public class BlueprintItem { public string ItemId { get; set; } public string FlooringId { get; set; } public float TileX { get; set; } public float TileY { get; set; } public string Name { get; set; } public string ItemType { get; set; } = "Object"; }
+    public class GhostItem { public Vector2 Tile { get; set; } public string ItemId { get; set; } }
 }
