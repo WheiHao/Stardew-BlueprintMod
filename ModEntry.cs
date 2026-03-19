@@ -315,11 +315,15 @@ namespace BlueprintMod
 
         private IEnumerable<StardewValley.Objects.Chest> GetAllChests()
         {
-            foreach (GameLocation location in Game1.locations)
+            var locations = new List<GameLocation> { Game1.currentLocation };
+            var farm = Game1.getFarm();
+            if (farm != null && !locations.Contains(farm)) locations.Add(farm);
+
+            foreach (GameLocation location in locations)
             {
                 foreach (var obj in location.Objects.Values)
                 {
-                    if (obj is StardewValley.Objects.Chest chest)
+                    if (obj is StardewValley.Objects.Chest chest && chest.playerChest.Value && !chest.fridge.Value)
                         yield return chest;
                 }
             }
