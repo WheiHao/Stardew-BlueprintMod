@@ -9,7 +9,7 @@
     "msg.naming-title": "命名你的蓝图",
     "msg.naming-default": "新蓝图",
     "msg.error-collision": "无法放置：安全模式拦截了碰撞地块！",
-    "msg.confirm-build": "检测到背包含有足够所需材料，是否消耗并一键放置蓝图？",
+    "msg.confirm-build": "检测到背包与箱子中含有足够所需材料，是否消耗并一键放置蓝图？",
     "msg.hud-blueprint": "蓝图: {{name}} ({{mode}})",
     "msg.mode-overwrite": "覆盖开启",
     "msg.mode-safe": "安全模式",

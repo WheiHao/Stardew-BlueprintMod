@@ -184,7 +184,7 @@ namespace BlueprintMod
             if (!isCreativeMode)
             {
                 var requirements = previewItems.GroupBy(i => i.ItemId).Select(g => new ItemRequirement { ItemId = g.Key, Count = g.Count() }).ToList();
-                bool hasEverything = requirements.All(req => Game1.player.Items.CountId(req.ItemId) >= req.Count);
+                bool hasEverything = requirements.All(req => GetTotalItemCount(req.ItemId) >= req.Count);
 
                 if (hasEverything)
                 {
@@ -200,7 +200,7 @@ namespace BlueprintMod
                         (who, answer) => {
                             if (answer == "Yes")
                             {
-                                foreach (var req in savedRequirements) Game1.player.Items.ReduceId(req.ItemId, req.Count);
+                                foreach (var req in savedRequirements) ConsumeItems(req.ItemId, req.Count);
                                 previewItems = savedPreviewItems;
                                 PlaceBlueprintReal(pendingTile.Value, savedRequirements);
                                 previewItems = null;
@@ -302,13 +302,63 @@ namespace BlueprintMod
             yPos += 40;
             foreach (var req in requirements)
             {
-                int playerHas = Game1.player.Items.CountId(req.ItemId);
+                int totalHas = GetTotalItemCount(req.ItemId);
                 ParsedItemData itemData = ItemRegistry.GetData(req.ItemId);
                 if (itemData != null)
                 {
                     b.Draw(itemData.GetTexture(), new Rectangle(xPos, yPos, 32, 32), itemData.GetSourceRect(), Color.White);
-                    b.DrawString(Game1.smallFont, $"{req.RequiredCount} ({playerHas})", new Vector2(xPos + 40, yPos + 4), playerHas >= req.RequiredCount ? Color.White : Color.Red);
+                    b.DrawString(Game1.smallFont, $"{req.RequiredCount} ({totalHas})", new Vector2(xPos + 40, yPos + 4), totalHas >= req.RequiredCount ? Color.White : Color.Red);
                     yPos += 35;
+                }
+            }
+        }
+
+        private IEnumerable<StardewValley.Objects.Chest> GetAllChests()
+        {
+            foreach (GameLocation location in Game1.locations)
+            {
+                foreach (var obj in location.Objects.Values)
+                {
+                    if (obj is StardewValley.Objects.Chest chest)
+                        yield return chest;
+                }
+            }
+        }
+
+        private int GetTotalItemCount(string itemId)
+        {
+            int count = Game1.player.Items.CountId(itemId);
+            foreach (var chest in GetAllChests())
+            {
+                count += chest.Items.CountId(itemId);
+            }
+            return count;
+        }
+
+        private void ConsumeItems(string itemId, int amount)
+        {
+            int remaining = amount;
+            
+            // 先扣除玩家背包
+            int fromPlayer = Math.Min(remaining, Game1.player.Items.CountId(itemId));
+            if (fromPlayer > 0)
+            {
+                Game1.player.Items.ReduceId(itemId, fromPlayer);
+                remaining -= fromPlayer;
+            }
+
+            // 如果还需要，扣除箱子
+            if (remaining > 0)
+            {
+                foreach (var chest in GetAllChests())
+                {
+                    int fromChest = Math.Min(remaining, chest.Items.CountId(itemId));
+                    if (fromChest > 0)
+                    {
+                        chest.Items.ReduceId(itemId, fromChest);
+                        remaining -= fromChest;
+                        if (remaining <= 0) break;
+                    }
                 }
             }
         }
@@ -486,7 +536,7 @@ namespace BlueprintMod
                 currentBlueprintIndex = blueprintFiles.IndexOf(selectedFile);
                 LoadCurrentBlueprint();
                 isPreviewMode = true;
-            });
+            }, Helper, GetTotalItemCount);
         }
 
         private void SwitchBlueprint(bool next) { if (blueprintFiles.Count > 1) { currentBlueprintIndex = next ? (currentBlueprintIndex + 1) % blueprintFiles.Count : (currentBlueprintIndex - 1 + blueprintFiles.Count) % blueprintFiles.Count; LoadCurrentBlueprint(); Game1.playSound("shwip"); } }
