@@ -22,6 +22,7 @@ namespace BlueprintMod
         private List<FileInfo> blueprintFiles = new List<FileInfo>();
         private int currentBlueprintIndex = 0;
         private List<GhostItem> placedGhosts = new List<GhostItem>();
+        private List<PlacementAction> undoStack = new List<PlacementAction>();
         private bool isCreativeMode = false;
         private bool isOverwriteMode = true;
 
@@ -148,6 +149,7 @@ namespace BlueprintMod
                 }
             }
             else if (e.Button == Config.OpenBlueprintBrowser && Helper.Input.IsDown(Config.ModModifier)) EnterPreviewMode();
+            else if (e.Button == Config.UndoKey && Helper.Input.IsDown(Config.ModModifier)) UndoLastPlacement();
         }
 
         private void HandlePlacementAttempt()
@@ -181,7 +183,7 @@ namespace BlueprintMod
 
             if (!isCreativeMode)
             {
-                var requirements = previewItems.GroupBy(i => i.ItemId).Select(g => new { ItemId = g.Key, Count = g.Count() }).ToList();
+                var requirements = previewItems.GroupBy(i => i.ItemId).Select(g => new ItemRequirement { ItemId = g.Key, Count = g.Count() }).ToList();
                 bool hasEverything = requirements.All(req => Game1.player.Items.CountId(req.ItemId) >= req.Count);
 
                 if (hasEverything)
@@ -200,7 +202,7 @@ namespace BlueprintMod
                             {
                                 foreach (var req in savedRequirements) Game1.player.Items.ReduceId(req.ItemId, req.Count);
                                 previewItems = savedPreviewItems;
-                                PlaceBlueprintReal(pendingTile.Value);
+                                PlaceBlueprintReal(pendingTile.Value, savedRequirements);
                                 previewItems = null;
                                 Game1.playSound("purchase");
                             }
@@ -311,9 +313,20 @@ namespace BlueprintMod
             }
         }
 
-        private void PlaceBlueprintReal(Vector2 origin)
+        private void PlaceBlueprintReal(Vector2 origin, List<ItemRequirement> refunds = null)
         {
             if (previewItems == null) return;
+
+            PlacementAction action = new PlacementAction { Location = Game1.currentLocation, RefundItems = refunds ?? new List<ItemRequirement>() };
+            var affectedTiles = previewItems.Select(i => new Vector2(origin.X + i.TileX, origin.Y + i.TileY)).Distinct();
+            foreach (var tile in affectedTiles)
+            {
+                var change = new TileChange { Tile = tile };
+                if (Game1.currentLocation.Objects.TryGetValue(tile, out var obj)) change.OldObject = obj;
+                if (Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var feature)) change.OldTerrainFeature = feature;
+                action.Changes.Add(change);
+            }
+
             var sortedItems = previewItems.OrderBy(i => i.ItemType == "Object" ? 1 : 0).ToList();
             foreach (var item in sortedItems)
             {
@@ -334,6 +347,9 @@ namespace BlueprintMod
                     if (newItem is StardewValley.Object obj) { obj.TileLocation = targetTile; Game1.currentLocation.Objects.Add(targetTile, obj); }
                 }
             }
+
+            undoStack.Add(action);
+            if (undoStack.Count > Config.MaxUndoSteps) undoStack.RemoveAt(0);
         }
 
         private void PlaceGhosts(Vector2 origin)
@@ -396,6 +412,42 @@ namespace BlueprintMod
         {
             int minX = (int)Math.Min(start.X, end.X), maxX = (int)Math.Max(start.X, end.X), minY = (int)Math.Min(start.Y, end.Y), maxY = (int)Math.Max(start.Y, end.Y);
             b.Draw(Game1.staminaRect, new Rectangle(minX * 64 - Game1.viewport.X, minY * 64 - Game1.viewport.Y, (maxX - minX + 1) * 64, (maxY - minY + 1) * 64), color);
+        }
+
+        private void UndoLastPlacement()
+        {
+            if (undoStack.Count == 0)
+            {
+                Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.undo-nothing"), 3));
+                return;
+            }
+
+            PlacementAction action = undoStack.Last();
+            undoStack.RemoveAt(undoStack.Count - 1);
+
+            foreach (var change in action.Changes)
+            {
+                if (action.Location.Objects.ContainsKey(change.Tile)) action.Location.Objects.Remove(change.Tile);
+                if (action.Location.terrainFeatures.ContainsKey(change.Tile)) action.Location.terrainFeatures.Remove(change.Tile);
+
+                if (change.OldObject != null)
+                {
+                    change.OldObject.TileLocation = change.Tile;
+                    action.Location.Objects.Add(change.Tile, change.OldObject);
+                }
+                if (change.OldTerrainFeature != null)
+                {
+                    action.Location.terrainFeatures.Add(change.Tile, change.OldTerrainFeature);
+                }
+            }
+
+            foreach (var refund in action.RefundItems)
+            {
+                Game1.player.addItemToInventory(ItemRegistry.Create(refund.ItemId, refund.Count));
+            }
+
+            Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.undo-success"), 3));
+            Game1.playSound("shwip");
         }
 
         private void SaveBlueprint(GameLocation location, Vector2 start, Vector2 end, string name)
@@ -467,4 +519,24 @@ namespace BlueprintMod
     public class BlueprintMetadata { public string Name { get; set; } public int Width { get; set; } public int Height { get; set; } }
     public class BlueprintItem { public string ItemId { get; set; } public string FlooringId { get; set; } public float TileX { get; set; } public float TileY { get; set; } public string Name { get; set; } public string ItemType { get; set; } = "Object"; }
     public class GhostItem { public Vector2 Tile { get; set; } public string ItemId { get; set; } }
-}
+
+    public class TileChange
+    {
+        public Vector2 Tile { get; set; }
+        public StardewValley.Object OldObject { get; set; }
+        public StardewValley.TerrainFeatures.TerrainFeature OldTerrainFeature { get; set; }
+    }
+
+    public class ItemRequirement
+    {
+        public string ItemId { get; set; }
+        public int Count { get; set; }
+    }
+
+    public class PlacementAction
+    {
+        public GameLocation Location { get; set; }
+        public List<TileChange> Changes { get; set; } = new List<TileChange>();
+        public List<ItemRequirement> RefundItems { get; set; } = new List<ItemRequirement>();
+    }
+    }

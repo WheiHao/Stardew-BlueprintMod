@@ -15,10 +15,13 @@
     "msg.mode-safe": "安全模式",
     "msg.shopping-list": "所需物资清单:",
     "msg.save-success": "蓝图 '{{name}}' 已保存！",
+    "msg.undo-success": "上一次一键放置已撤销！",
+    "msg.undo-nothing": "没有可以撤销的操作",
     "msg.error-no-blueprints": "没有蓝图文件！",
     "msg.error-parse-failed": "蓝图文件解析失败",
     "config.creative-mode-key": "切换创造模式按键",
     "config.overwrite-mode-key": "切换覆盖模式按键",
+    "config.undo-key": "撤销一键放置按键",
     "config.preview-key": "打开蓝图浏览器/预览按键",
     "config.clear-ghosts-key": "清除所有虚影按键"
 }
