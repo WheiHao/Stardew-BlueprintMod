@@ -14,6 +14,7 @@ namespace BlueprintMod
 {
     public class ModEntry : Mod
     {
+        private ModConfig Config;
         private Vector2? startTile = null;
         private List<BlueprintItem> previewItems = null;
         private BlueprintMetadata currentMetadata = null;
@@ -28,10 +29,34 @@ namespace BlueprintMod
 
         public override void Entry(IModHelper helper)
         {
+            this.Config = helper.ReadConfig<ModConfig>();
+            this.isCreativeMode = this.Config.DefaultCreativeMode;
+            this.isOverwriteMode = this.Config.DefaultOverwriteMode;
+
             helper.Events.Input.ButtonPressed += OnButtonPressed;
             helper.Events.Display.RenderedWorld += OnRenderedWorld;
             helper.Events.Display.RenderedHud += OnRenderedHud;
             helper.Events.GameLoop.UpdateTicked += OnUpdateTicked;
+            helper.Events.GameLoop.GameLaunched += OnGameLaunched;
+        }
+
+        private void OnGameLaunched(object sender, GameLaunchedEventArgs e)
+        {
+            var configMenu = Helper.ModRegistry.GetApi<IGenericModConfigMenuApi>("spacechase0.GenericModConfigMenu");
+            if (configMenu != null)
+            {
+                configMenu.Register(
+                    mod: ModManifest,
+                    reset: () => Config = new ModConfig(),
+                    save: () => Helper.WriteConfig(Config)
+                );
+
+                configMenu.AddKeybind(ModManifest, () => Config.ToggleCreativeMode, val => Config.ToggleCreativeMode = val, () => Helper.Translation.Get("config.creative-mode-key"));
+                configMenu.AddKeybind(ModManifest, () => Config.ToggleOverwriteMode, val => Config.ToggleOverwriteMode = val, () => Helper.Translation.Get("config.overwrite-mode-key"));
+                configMenu.AddKeybind(ModManifest, () => Config.OpenBlueprintBrowser, val => Config.OpenBlueprintBrowser = val, () => Helper.Translation.Get("config.preview-key"));
+                configMenu.AddKeybind(ModManifest, () => Config.ClearGhosts, val => Config.ClearGhosts = val, () => Helper.Translation.Get("config.clear-ghosts-key"));
+                configMenu.AddBoolOption(ModManifest, () => Config.DefaultOverwriteMode, val => Config.DefaultOverwriteMode = val, () => "默认开启覆盖模式");
+            }
         }
 
         private void OnUpdateTicked(object sender, UpdateTickedEventArgs e)
@@ -50,7 +75,6 @@ namespace BlueprintMod
 
         private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
         {
-            // 如果当前有菜单或对话框打开，不处理 Mod 逻辑 (防止无限弹窗)
             if (Game1.activeClickableMenu != null) return;
 
             if (e.Button == SButton.Escape)
@@ -58,7 +82,7 @@ namespace BlueprintMod
                 if (startTile != null)
                 {
                     startTile = null;
-                    Game1.addHUDMessage(new HUDMessage("已取消区域框选", 3));
+                    Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.selection-canceled"), 3));
                     Helper.Input.Suppress(e.Button);
                     return;
                 }
@@ -66,25 +90,25 @@ namespace BlueprintMod
                 {
                     isPreviewMode = false;
                     previewItems = null;
-                    Game1.addHUDMessage(new HUDMessage("已退出蓝图预览", 3));
+                    Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.preview-exited"), 3));
                     Helper.Input.Suppress(e.Button);
                     return;
                 }
             }
 
-            if (Helper.Input.IsDown(SButton.LeftControl) && (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight)) Helper.Input.Suppress(e.Button);
+            if (Helper.Input.IsDown(Config.ModModifier) && (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight)) Helper.Input.Suppress(e.Button);
 
-            if (e.Button == SButton.K)
+            if (e.Button == Config.ToggleCreativeMode)
             {
                 isCreativeMode = !isCreativeMode;
-                Game1.addHUDMessage(new HUDMessage($"蓝图模式: {(isCreativeMode ? "创造" : "生存")}", 3));
+                Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get(isCreativeMode ? "msg.mode-creative" : "msg.mode-survival"), 3));
             }
-            else if (e.Button == SButton.O)
+            else if (e.Button == Config.ToggleOverwriteMode)
             {
                 isOverwriteMode = !isOverwriteMode;
-                Game1.addHUDMessage(new HUDMessage($"覆盖模式: {(isOverwriteMode ? "开启" : "关闭")}", 3));
+                Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get(isOverwriteMode ? "msg.overwrite-on" : "msg.overwrite-off"), 3));
             }
-            else if (e.Button == SButton.C && Helper.Input.IsDown(SButton.LeftControl) && Helper.Input.IsDown(SButton.LeftShift))
+            else if (e.Button == Config.ClearGhosts && Helper.Input.IsDown(Config.ModModifier) && Helper.Input.IsDown(SButton.LeftShift))
             {
                 placedGhosts.Clear();
                 Game1.playSound("trashcan");
@@ -93,37 +117,37 @@ namespace BlueprintMod
             {
                 if (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight) Helper.Input.Suppress(e.Button);
                 if (e.Button == SButton.MouseLeft) HandlePlacementAttempt();
-                else if (e.Button == SButton.MouseRight) { isPreviewMode = false; previewItems = null; Game1.addHUDMessage(new HUDMessage("已退出蓝图预览", 3)); }
+                else if (e.Button == SButton.MouseRight) { isPreviewMode = false; previewItems = null; Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.preview-exited"), 3)); }
                 else if (e.Button == SButton.Left || e.Button == SButton.Right) SwitchBlueprint(e.Button == SButton.Right);
             }
-            else if (!isCreativeMode && e.Button == SButton.MouseLeft && !Helper.Input.IsDown(SButton.LeftControl))
+            else if (!isCreativeMode && e.Button == SButton.MouseLeft && !Helper.Input.IsDown(Config.ModModifier))
             {
                 HandleGhostFilling(new Vector2((int)e.Cursor.Tile.X, (int)e.Cursor.Tile.Y));
             }
-            else if (Helper.Input.IsDown(SButton.LeftControl) && (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight))
+            else if (Helper.Input.IsDown(Config.ModModifier) && (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight))
             {
                 if (e.Button == SButton.MouseLeft)
                 {
-                    if (startTile == null) { startTile = e.Cursor.Tile; Game1.addHUDMessage(new HUDMessage("起始点已设定", 3)); }
+                    if (startTile == null) { startTile = e.Cursor.Tile; Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.start-tile-set"), 3)); }
                     else
                     {
-                        Vector2 capturedStart = startTile.Value; // 捕获当前起始点
-                        Vector2 capturedEnd = e.Cursor.Tile;     // 捕获当前结束点
+                        Vector2 capturedStart = startTile.Value;
+                        Vector2 capturedEnd = e.Cursor.Tile;
                         
                         Game1.activeClickableMenu = new NamingMenu(name => {
                             SaveBlueprint(Game1.currentLocation, capturedStart, capturedEnd, name);
                             startTile = null;
-                            Game1.exitActiveMenu(); // 显式关闭命名窗口
-                        }, "命名你的蓝图", "新蓝图");
+                            Game1.exitActiveMenu();
+                        }, Helper.Translation.Get("msg.naming-title"), Helper.Translation.Get("msg.naming-default"));
                     }
                 }
                 else if (e.Button == SButton.MouseRight && startTile != null)
                 {
                     startTile = null;
-                    Game1.addHUDMessage(new HUDMessage("已取消区域框选", 3));
+                    Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.selection-canceled"), 3));
                 }
             }
-            else if (e.Button == SButton.L && Helper.Input.IsDown(SButton.LeftControl)) EnterPreviewMode();
+            else if (e.Button == Config.OpenBlueprintBrowser && Helper.Input.IsDown(Config.ModModifier)) EnterPreviewMode();
         }
 
         private void HandlePlacementAttempt()
@@ -153,7 +177,7 @@ namespace BlueprintMod
                 }
             }
 
-            if (hasCollision) { Game1.playSound("cancel"); Game1.showRedMessage("无法放置：安全模式拦截了碰撞地块！"); return; }
+            if (hasCollision) { Game1.playSound("cancel"); Game1.showRedMessage(Helper.Translation.Get("msg.error-collision")); return; }
 
             if (!isCreativeMode)
             {
@@ -163,20 +187,18 @@ namespace BlueprintMod
                 if (hasEverything)
                 {
                     pendingTile = mouseTile;
-                    // 提前保存清单并关闭预览模式，防止弹窗点击时再次触发
                     var savedRequirements = requirements;
                     var savedPreviewItems = previewItems;
                     isPreviewMode = false;
                     previewItems = null;
 
                     Game1.currentLocation.createQuestionDialogue(
-                        "检测到背包含有足够所需材料，是否消耗并一键放置蓝图？",
+                        Helper.Translation.Get("msg.confirm-build"),
                         Game1.currentLocation.createYesNoResponses(),
                         (who, answer) => {
                             if (answer == "Yes")
                             {
                                 foreach (var req in savedRequirements) Game1.player.Items.ReduceId(req.ItemId, req.Count);
-                                // 临时恢复 previewItems 以执行 PlaceBlueprintReal
                                 previewItems = savedPreviewItems;
                                 PlaceBlueprintReal(pendingTile.Value);
                                 previewItems = null;
@@ -212,8 +234,6 @@ namespace BlueprintMod
             if (isPreviewMode && previewItems != null)
             {
                 Vector2 mouseTile = new Vector2((int)Helper.Input.GetCursorPosition().Tile.X, (int)Helper.Input.GetCursorPosition().Tile.Y);
-                
-                // 使用 Lookup 处理一个坐标有多个物品的情况（如地板上的洒水器）
                 var itemLookup = previewItems.ToLookup(i => new Vector2(i.TileX, i.TileY));
 
                 for (int x = 0; x < currentMetadata.Width; x++)
@@ -263,7 +283,8 @@ namespace BlueprintMod
             if (isPreviewMode && previewItems != null)
             {
                 string displayName = currentMetadata?.Name ?? blueprintFiles[currentBlueprintIndex].Name;
-                string topText = $"蓝图: {displayName} ({(isOverwriteMode ? "覆盖开启" : "安全模式")})";
+                string modeText = Helper.Translation.Get(isOverwriteMode ? "msg.mode-overwrite" : "msg.mode-safe");
+                string topText = Helper.Translation.Get("msg.hud-blueprint", new { name = displayName, mode = modeText });
                 e.SpriteBatch.DrawString(Game1.dialogueFont, topText, new Vector2(80, 80), Color.White);
                 DrawShoppingList(e.SpriteBatch);
             }
@@ -275,7 +296,7 @@ namespace BlueprintMod
             var requirements = previewItems.GroupBy(i => i.ItemId).Select(g => new { ItemId = g.Key, RequiredCount = g.Count() }).ToList();
             int xPos = Game1.uiViewport.Width - 300, yPos = 150;
             b.Draw(Game1.staminaRect, new Rectangle(xPos - 10, yPos - 10, 280, requirements.Count * 40 + 60), Color.Black * 0.5f);
-            b.DrawString(Game1.dialogueFont, "所需物资清单:", new Vector2(xPos, yPos), Color.Gold, 0f, Vector2.Zero, 0.8f, SpriteEffects.None, 0f);
+            b.DrawString(Game1.dialogueFont, Helper.Translation.Get("msg.shopping-list"), new Vector2(xPos, yPos), Color.Gold, 0f, Vector2.Zero, 0.8f, SpriteEffects.None, 0f);
             yPos += 40;
             foreach (var req in requirements)
             {
@@ -392,7 +413,7 @@ namespace BlueprintMod
                 var data = new BlueprintFile { Metadata = new BlueprintMetadata { Name = name, Width = maxX - minX + 1, Height = maxY - minY + 1 }, Items = items };
                 this.Helper.Data.WriteJsonFile($"blueprints/{safeName}_{DateTime.Now:yyyyMMdd_HHmmss}.json", data);
                 Game1.playSound("drumkit0");
-                Game1.showGlobalMessage($"蓝图 '{name}' 已保存！");
+                Game1.showGlobalMessage(Helper.Translation.Get("msg.save-success", new { name = name }));
             }
         }
 
@@ -401,8 +422,19 @@ namespace BlueprintMod
             string path = Path.Combine(this.Helper.DirectoryPath, "blueprints");
             if (!Directory.Exists(path)) Directory.CreateDirectory(path);
             blueprintFiles = new DirectoryInfo(path).GetFiles("*.json").OrderByDescending(f => f.LastWriteTime).ToList();
-            if (blueprintFiles.Count == 0) Game1.showRedMessage("没有蓝图文件！");
-            else { currentBlueprintIndex = 0; LoadCurrentBlueprint(); isPreviewMode = true; }
+            
+            if (blueprintFiles.Count == 0) 
+            {
+                Game1.showRedMessage(Helper.Translation.Get("msg.error-no-blueprints"));
+                return;
+            }
+
+            // 打开图形化浏览器
+            Game1.activeClickableMenu = new BlueprintBrowserMenu(blueprintFiles, (selectedFile) => {
+                currentBlueprintIndex = blueprintFiles.IndexOf(selectedFile);
+                LoadCurrentBlueprint();
+                isPreviewMode = true;
+            });
         }
 
         private void SwitchBlueprint(bool next) { if (blueprintFiles.Count > 1) { currentBlueprintIndex = next ? (currentBlueprintIndex + 1) % blueprintFiles.Count : (currentBlueprintIndex - 1 + blueprintFiles.Count) % blueprintFiles.Count; LoadCurrentBlueprint(); Game1.playSound("shwip"); } }
@@ -417,11 +449,19 @@ namespace BlueprintMod
             }
             else
             {
-                Game1.addHUDMessage(new HUDMessage("蓝图文件解析失败", 1));
+                Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.error-parse-failed"), 1));
                 isPreviewMode = false;
             }
         }
     }
+
+    public interface IGenericModConfigMenuApi
+    {
+        void Register(IManifest mod, Action reset, Action save, bool titleScreenOnly = false);
+        void AddKeybind(IManifest mod, Func<SButton> getValue, Action<SButton> setValue, Func<string> name, Func<string> tooltip = null, string fieldId = null);
+        void AddBoolOption(IManifest mod, Func<bool> getValue, Action<bool> setValue, Func<string> name, Func<string> tooltip = null, string fieldId = null);
+    }
+
 
     public class BlueprintFile { public BlueprintMetadata Metadata { get; set; } public List<BlueprintItem> Items { get; set; } }
     public class BlueprintMetadata { public string Name { get; set; } public int Width { get; set; } public int Height { get; set; } }
