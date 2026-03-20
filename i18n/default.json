@@ -10,9 +10,11 @@
     "msg.naming-default": "新蓝图",
     "msg.error-collision": "无法放置：安全模式拦截了碰撞地块！",
     "msg.confirm-build": "检测到背包与箱子中含有足够所需材料，是否消耗并一键放置蓝图？",
-    "msg.hud-blueprint": "蓝图: {{name}} ({{mode}})",
+    "msg.hud-blueprint": "蓝图: {{name}} ({{overwrite}}, {{creative}})",
     "msg.mode-overwrite": "覆盖开启",
     "msg.mode-safe": "安全模式",
+    "msg.mode-creative-short": "创造",
+    "msg.mode-survival-short": "生存",
     "msg.shopping-list": "所需物资清单:",
     "msg.save-success": "蓝图 '{{name}}' 已保存！",
     "msg.undo-success": "上一次一键放置已撤销！",
@@ -24,5 +26,10 @@
     "config.undo-key": "撤销一键放置按键",
     "config.preview-key": "打开蓝图浏览器/预览按键",
     "config.clear-ghosts-key": "清除所有虚影按键",
-    "config.chest-range": "箱子搜索范围"
+    "config.chest-range-mode": "箱子搜索模式",
+    "config.chest-range-mode.global": "全局",
+    "config.chest-range-mode.location": "仅当前区域",
+    "config.chest-range-mode.custom": "自定义范围",
+    "config.chest-range": "箱子搜索范围",
+    "config.chest-range.tooltip": "当搜索模式为“自定义范围”时生效"
 }

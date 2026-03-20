@@ -57,14 +57,24 @@ namespace BlueprintMod
                 configMenu.AddKeybind(ModManifest, () => Config.OpenBlueprintBrowser, val => Config.OpenBlueprintBrowser = val, () => Helper.Translation.Get("config.preview-key"));
                 configMenu.AddKeybind(ModManifest, () => Config.ClearGhosts, val => Config.ClearGhosts = val, () => Helper.Translation.Get("config.clear-ghosts-key"));
                 configMenu.AddBoolOption(ModManifest, () => Config.DefaultOverwriteMode, val => Config.DefaultOverwriteMode = val, () => "默认开启覆盖模式");
+
+                configMenu.AddTextOption(
+                    mod: ModManifest,
+                    getValue: () => Config.ChestRangeMode,
+                    setValue: val => Config.ChestRangeMode = val,
+                    name: () => Helper.Translation.Get("config.chest-range-mode"),
+                    allowedValues: new[] { "Global", "Location", "Custom" },
+                    formatAllowedValue: val => Helper.Translation.Get($"config.chest-range-mode.{val.ToLower()}")
+                );
+
                 configMenu.AddNumberOption(
                     mod: ModManifest,
                     getValue: () => Config.ChestSearchRange,
                     setValue: val => Config.ChestSearchRange = val,
                     name: () => Helper.Translation.Get("config.chest-range"),
-                    tooltip: () => "从箱子里拿东西的范围，0=无限",
+                    tooltip: () => Helper.Translation.Get("config.chest-range.tooltip"),
                     min: 0,
-                    max: 100,
+                    max: 500,
                     interval: 1
                 );
             }
@@ -295,8 +305,9 @@ namespace BlueprintMod
             if (isPreviewMode && previewItems != null)
             {
                 string displayName = currentMetadata?.Name ?? blueprintFiles[currentBlueprintIndex].Name;
-                string modeText = Helper.Translation.Get(isOverwriteMode ? "msg.mode-overwrite" : "msg.mode-safe");
-                string topText = Helper.Translation.Get("msg.hud-blueprint", new { name = displayName, mode = modeText });
+                string overwriteModeText = Helper.Translation.Get(isOverwriteMode ? "msg.mode-overwrite" : "msg.mode-safe");
+                string creativeModeText = Helper.Translation.Get(isCreativeMode ? "msg.mode-creative-short" : "msg.mode-survival-short");
+                string topText = Helper.Translation.Get("msg.hud-blueprint", new { name = displayName, overwrite = overwriteModeText, creative = creativeModeText });
                 e.SpriteBatch.DrawString(Game1.dialogueFont, topText, new Vector2(80, 80), Color.White);
                 DrawShoppingList(e.SpriteBatch);
             }
@@ -325,33 +336,49 @@ namespace BlueprintMod
 
         private IEnumerable<StardewValley.Objects.Chest> GetAllChests()
         {
-            if (Config.ChestSearchRange <= 0)
+            switch (Config.ChestRangeMode)
             {
-                var locations = new List<GameLocation> { Game1.currentLocation };
-                var farm = Game1.getFarm();
-                if (farm != null && !locations.Contains(farm)) locations.Add(farm);
+                case "Global":
+                    {
+                        var locations = new List<GameLocation> { Game1.currentLocation };
+                        var farm = Game1.getFarm();
+                        if (farm != null && !locations.Contains(farm)) locations.Add(farm);
 
-                foreach (GameLocation location in locations)
-                {
-                    foreach (var obj in location.Objects.Values)
-                    {
-                        if (obj is StardewValley.Objects.Chest chest && chest.playerChest.Value && !chest.fridge.Value)
-                            yield return chest;
-                    }
-                }
-            }
-            else
-            {
-                foreach (var obj in Game1.currentLocation.Objects.Values)
-                {
-                    if (obj is StardewValley.Objects.Chest chest && chest.playerChest.Value && !chest.fridge.Value)
-                    {
-                        if (Vector2.Distance(Game1.player.Tile, chest.TileLocation) <= Config.ChestSearchRange)
+                        foreach (GameLocation location in locations)
                         {
-                            yield return chest;
+                            foreach (var obj in location.Objects.Values)
+                            {
+                                if (obj is StardewValley.Objects.Chest chest && chest.playerChest.Value && !chest.fridge.Value)
+                                    yield return chest;
+                            }
                         }
+                        break;
                     }
-                }
+
+                case "Location":
+                    {
+                        foreach (var obj in Game1.currentLocation.Objects.Values)
+                        {
+                            if (obj is StardewValley.Objects.Chest chest && chest.playerChest.Value && !chest.fridge.Value)
+                                yield return chest;
+                        }
+                        break;
+                    }
+
+                case "Custom":
+                    {
+                        foreach (var obj in Game1.currentLocation.Objects.Values)
+                        {
+                            if (obj is StardewValley.Objects.Chest chest && chest.playerChest.Value && !chest.fridge.Value)
+                            {
+                                if (Vector2.Distance(Game1.player.Tile, chest.TileLocation) <= Config.ChestSearchRange)
+                                {
+                                    yield return chest;
+                                }
+                            }
+                        }
+                        break;
+                    }
             }
         }
 
@@ -597,6 +624,7 @@ namespace BlueprintMod
         void AddKeybind(IManifest mod, Func<SButton> getValue, Action<SButton> setValue, Func<string> name, Func<string> tooltip = null, string fieldId = null);
         void AddBoolOption(IManifest mod, Func<bool> getValue, Action<bool> setValue, Func<string> name, Func<string> tooltip = null, string fieldId = null);
         void AddNumberOption(IManifest mod, Func<int> getValue, Action<int> setValue, Func<string> name, Func<string> tooltip = null, int? min = null, int? max = null, int? interval = null, string fieldId = null);
+        void AddTextOption(IManifest mod, Func<string> getValue, Action<string> setValue, Func<string> name, Func<string> tooltip = null, string[] allowedValues = null, Func<string, string> formatAllowedValue = null, string fieldId = null);
     }
 
 
