@@ -3,6 +3,7 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
+using StardewModdingAPI.Utilities;
 using StardewValley;
 using StardewValley.ItemTypeDefinitions;
 using StardewValley.Menus;
@@ -52,31 +53,37 @@ namespace BlueprintMod
                     save: () => Helper.WriteConfig(Config)
                 );
 
-                configMenu.AddKeybind(ModManifest, () => Config.ToggleCreativeMode, val => Config.ToggleCreativeMode = val, () => Helper.Translation.Get("config.creative-mode-key"));
-                configMenu.AddKeybind(ModManifest, () => Config.ToggleOverwriteMode, val => Config.ToggleOverwriteMode = val, () => Helper.Translation.Get("config.overwrite-mode-key"));
-                configMenu.AddKeybind(ModManifest, () => Config.OpenBlueprintBrowser, val => Config.OpenBlueprintBrowser = val, () => Helper.Translation.Get("config.preview-key"));
-                configMenu.AddKeybind(ModManifest, () => Config.ClearGhosts, val => Config.ClearGhosts = val, () => Helper.Translation.Get("config.clear-ghosts-key"));
-                configMenu.AddBoolOption(ModManifest, () => Config.DefaultOverwriteMode, val => Config.DefaultOverwriteMode = val, () => "默认开启覆盖模式");
+                configMenu.AddKeybindList(ModManifest,
+                    () => Config.ToggleCreativeMode,
+                    val => Config.ToggleCreativeMode = val,
+                    () => Helper.Translation.Get("config.creative-mode-key"));
 
-                configMenu.AddTextOption(
-                    mod: ModManifest,
-                    getValue: () => Config.ChestRangeMode,
-                    setValue: val => Config.ChestRangeMode = val,
-                    name: () => Helper.Translation.Get("config.chest-range-mode"),
-                    allowedValues: new[] { "Global", "Location", "Custom" },
-                    formatAllowedValue: val => Helper.Translation.Get($"config.chest-range-mode.{val.ToLower()}")
-                );
+                configMenu.AddKeybindList(ModManifest,
+                    () => Config.ToggleOverwriteMode,
+                    val => Config.ToggleOverwriteMode = val,
+                    () => Helper.Translation.Get("config.overwrite-mode-key"));
 
-                configMenu.AddNumberOption(
-                    mod: ModManifest,
-                    getValue: () => Config.ChestSearchRange,
-                    setValue: val => Config.ChestSearchRange = val,
-                    name: () => Helper.Translation.Get("config.chest-range"),
-                    tooltip: () => Helper.Translation.Get("config.chest-range.tooltip"),
-                    min: 0,
-                    max: 500,
-                    interval: 1
-                );
+                configMenu.AddKeybindList(ModManifest,
+                    () => Config.OpenBlueprintBrowser,
+                    val => Config.OpenBlueprintBrowser = val,
+                    () => Helper.Translation.Get("config.open-blueprint-browser-key"),
+                    () => Helper.Translation.Get("config.open-blueprint-browser-key.tooltip"));
+
+                configMenu.AddKeybindList(ModManifest,
+                    () => Config.UndoKey,
+                    val => Config.UndoKey = val,
+                    () => Helper.Translation.Get("config.undo-key"));
+
+                configMenu.AddKeybindList(ModManifest,
+                    () => Config.ClearGhosts,
+                    val => Config.ClearGhosts = val,
+                    () => Helper.Translation.Get("config.clear-ghosts-key"),
+                    () => Helper.Translation.Get("config.clear-ghosts-key.tooltip"));
+
+                configMenu.AddBoolOption(ModManifest,
+                    () => Config.DefaultOverwriteMode,
+                    val => Config.DefaultOverwriteMode = val,
+                    () => "默认开启覆盖模式");
             }
         }
 
@@ -117,34 +124,39 @@ namespace BlueprintMod
                 }
             }
 
-            if (Helper.Input.IsDown(Config.ModModifier) && (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight)) Helper.Input.Suppress(e.Button);
+            if (Helper.Input.IsDown(Config.ModModifier) &&
+                (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight))
+            {
+                Helper.Input.Suppress(e.Button);
+            }
 
-            if (e.Button == Config.ToggleCreativeMode)
+            // ✅ 修复：KeybindList 判断
+            if (Config.ToggleCreativeMode.JustPressed())
             {
                 isCreativeMode = !isCreativeMode;
-                Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get(isCreativeMode ? "msg.mode-creative" : "msg.mode-survival"), 3));
+                Game1.addHUDMessage(new HUDMessage(
+                    Helper.Translation.Get(isCreativeMode ? "msg.mode-creative" : "msg.mode-survival"), 3));
             }
-            else if (e.Button == Config.ToggleOverwriteMode)
+            else if (Config.ToggleOverwriteMode.JustPressed())
             {
                 isOverwriteMode = !isOverwriteMode;
-                Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get(isOverwriteMode ? "msg.overwrite-on" : "msg.overwrite-off"), 3));
+                Game1.addHUDMessage(new HUDMessage(
+                    Helper.Translation.Get(isOverwriteMode ? "msg.overwrite-on" : "msg.overwrite-off"), 3));
             }
-            else if (e.Button == Config.ClearGhosts && Helper.Input.IsDown(Config.ModModifier) && Helper.Input.IsDown(SButton.LeftShift))
+            else if (Config.ClearGhosts.JustPressed())
             {
                 placedGhosts.Clear();
                 Game1.playSound("trashcan");
             }
-            else if (isPreviewMode)
+            else if (Config.OpenBlueprintBrowser.JustPressed())
             {
-                if (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight) Helper.Input.Suppress(e.Button);
-                if (e.Button == SButton.MouseLeft) HandlePlacementAttempt();
-                else if (e.Button == SButton.MouseRight) { isPreviewMode = false; previewItems = null; Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.preview-exited"), 3)); }
-                else if (e.Button == SButton.Left || e.Button == SButton.Right) SwitchBlueprint(e.Button == SButton.Right);
+                EnterPreviewMode();
             }
-            else if (!isCreativeMode && e.Button == SButton.MouseLeft && !Helper.Input.IsDown(Config.ModModifier))
+            else if (Config.UndoKey.JustPressed())
             {
-                HandleGhostFilling(new Vector2((int)e.Cursor.Tile.X, (int)e.Cursor.Tile.Y));
+                UndoLastPlacement();
             }
+            // Re-inserted missing logic for blueprint range selection
             else if (Helper.Input.IsDown(Config.ModModifier) && (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight))
             {
                 if (e.Button == SButton.MouseLeft)
@@ -168,8 +180,29 @@ namespace BlueprintMod
                     Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.selection-canceled"), 3));
                 }
             }
-            else if (e.Button == Config.OpenBlueprintBrowser && Helper.Input.IsDown(Config.ModModifier)) EnterPreviewMode();
-            else if (e.Button == Config.UndoKey && Helper.Input.IsDown(Config.ModModifier)) UndoLastPlacement();
+
+            // === 下面保持你原逻辑 ===
+            else if (isPreviewMode)
+            {
+                if (e.Button == SButton.MouseLeft || e.Button == SButton.MouseRight)
+                    Helper.Input.Suppress(e.Button);
+
+                if (e.Button == SButton.MouseLeft)
+                    HandlePlacementAttempt();
+                else if (e.Button == SButton.MouseRight)
+                {
+                    isPreviewMode = false;
+                    previewItems = null;
+                    Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.preview-exited"), 3));
+                }
+                else if (e.Button == SButton.Left || e.Button == SButton.Right)
+                    SwitchBlueprint(e.Button == SButton.Right);
+            }
+            else if (!isCreativeMode && e.Button == SButton.MouseLeft &&
+                     !Helper.Input.IsDown(Config.ModModifier))
+            {
+                HandleGhostFilling(new Vector2((int)e.Cursor.Tile.X, (int)e.Cursor.Tile.Y));
+            }
         }
 
         private void HandlePlacementAttempt()
@@ -618,16 +651,6 @@ namespace BlueprintMod
         }
     }
 
-    public interface IGenericModConfigMenuApi
-    {
-        void Register(IManifest mod, Action reset, Action save, bool titleScreenOnly = false);
-        void AddKeybind(IManifest mod, Func<SButton> getValue, Action<SButton> setValue, Func<string> name, Func<string> tooltip = null, string fieldId = null);
-        void AddBoolOption(IManifest mod, Func<bool> getValue, Action<bool> setValue, Func<string> name, Func<string> tooltip = null, string fieldId = null);
-        void AddNumberOption(IManifest mod, Func<int> getValue, Action<int> setValue, Func<string> name, Func<string> tooltip = null, int? min = null, int? max = null, int? interval = null, string fieldId = null);
-        void AddTextOption(IManifest mod, Func<string> getValue, Action<string> setValue, Func<string> name, Func<string> tooltip = null, string[] allowedValues = null, Func<string, string> formatAllowedValue = null, string fieldId = null);
-    }
-
-
     public class BlueprintFile { public BlueprintMetadata Metadata { get; set; } public List<BlueprintItem> Items { get; set; } }
     public class BlueprintMetadata { public string Name { get; set; } public int Width { get; set; } public int Height { get; set; } }
     public class BlueprintItem { public string ItemId { get; set; } public string FlooringId { get; set; } public float TileX { get; set; } public float TileY { get; set; } public string Name { get; set; } public string ItemType { get; set; } = "Object"; }
@@ -651,5 +674,17 @@ namespace BlueprintMod
         public GameLocation Location { get; set; }
         public List<TileChange> Changes { get; set; } = new List<TileChange>();
         public List<ItemRequirement> RefundItems { get; set; } = new List<ItemRequirement>();
+    }
+
+    // Local definition for IGenericModConfigMenuApi to allow compilation.
+    // The actual API is provided by the Generic Mod Config Menu mod at runtime.
+    public interface IGenericModConfigMenuApi
+    {
+        void Register(IManifest mod, Action reset, Action save, bool titleScreenOnly = false);
+        void AddKeybind(IManifest mod, Func<SButton> getValue, Action<SButton> setValue, Func<string> name, Func<string> tooltip = null, string fieldId = null);
+        void AddBoolOption(IManifest mod, Func<bool> getValue, Action<bool> setValue, Func<string> name, Func<string> tooltip = null, string fieldId = null);
+        void AddNumberOption(IManifest mod, Func<int> getValue, Action<int> setValue, Func<string> name, Func<string> tooltip = null, int? min = null, int? max = null, int? interval = null, string fieldId = null);
+        void AddTextOption(IManifest mod, Func<string> getValue, Action<string> setValue, Func<string> name, Func<string> tooltip = null, string[] allowedValues = null, Func<string, string> formatAllowedValue = null, string fieldId = null);
+        void AddKeybindList(IManifest mod, Func<KeybindList> getValue, Action<KeybindList> setValue, Func<string> name, Func<string> tooltip = null, string fieldId = null);
     }
     }
