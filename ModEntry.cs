@@ -104,15 +104,7 @@ namespace BlueprintMod
         private void OnUpdateTicked(object sender, UpdateTickedEventArgs e)
         {
             if (!e.IsMultipleOf(20) || placedGhosts.Count == 0 || Game1.currentLocation == null) return;
-            placedGhosts.RemoveAll(ghost => {
-                Vector2 tile = ghost.Tile;
-                if (Game1.currentLocation.Objects.TryGetValue(tile, out var obj) && obj.QualifiedItemId == ghost.ItemId) return true;
-                if (Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var feature) && feature is StardewValley.TerrainFeatures.Flooring flooring)
-                {
-                    if ("(O)" + (flooring.GetData()?.ItemId ?? "") == ghost.ItemId) return true;
-                }
-                return false;
-            });
+            placedGhosts.RemoveAll(IsGhostSatisfied);
         }
 
         private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
@@ -377,7 +369,16 @@ namespace BlueprintMod
                     }
                 }
             }
-            foreach (var ghost in placedGhosts) DrawGhost(e.SpriteBatch, ghost.Tile, ghost.ItemId, 0.4f, Color.White * 0.6f);
+            foreach (var ghost in placedGhosts)
+            {
+                if (ghost.IsPlantingHint)
+                    DrawPlantingHintBackground(e.SpriteBatch, ghost);
+
+                Color tint = ghost.IsPlantingHint ? Color.YellowGreen * 0.9f : Color.White * 0.6f;
+                float scale = ghost.IsPlantingHint ? 0.8f : 1f;
+                float alpha = ghost.IsPlantingHint ? 0.55f : 0.4f;
+                DrawGhost(e.SpriteBatch, ghost.Tile, ghost.ItemId, alpha, tint, scale);
+            }
         }
 
         private void OnRenderedHud(object sender, RenderedHudEventArgs e)
@@ -394,7 +395,26 @@ namespace BlueprintMod
                     string plantingText = Helper.Translation.Get("msg.hud-planting", new { count = currentPlantingPlans.Count });
                     e.SpriteBatch.DrawString(Game1.smallFont, plantingText, new Vector2(80, 120), Color.LightGreen);
                 }
+
+                GhostItem hoveredPlantingGhost = GetHoveredPlantingGhost();
+                if (hoveredPlantingGhost != null && !string.IsNullOrWhiteSpace(hoveredPlantingGhost.DisplayName))
+                {
+                    string modeText = Helper.Translation.Get(hoveredPlantingGhost.PlantingMode == PlantingMode.IndoorPot ? "msg.planting-mode-pot" : "msg.planting-mode-ground");
+                    string hoverText = $"{hoveredPlantingGhost.DisplayName} [{modeText}]";
+                    e.SpriteBatch.DrawString(Game1.smallFont, hoverText, new Vector2(80, 145), Color.Wheat);
+                }
+
                 DrawShoppingList(e.SpriteBatch);
+            }
+            else
+            {
+                GhostItem hoveredPlantingGhost = GetHoveredPlantingGhost();
+                if (hoveredPlantingGhost != null && !string.IsNullOrWhiteSpace(hoveredPlantingGhost.DisplayName))
+                {
+                    string modeText = Helper.Translation.Get(hoveredPlantingGhost.PlantingMode == PlantingMode.IndoorPot ? "msg.planting-mode-pot" : "msg.planting-mode-ground");
+                    string hoverText = $"{hoveredPlantingGhost.DisplayName} [{modeText}]";
+                    e.SpriteBatch.DrawString(Game1.smallFont, hoverText, new Vector2(80, 80), Color.Wheat);
+                }
             }
         }
 
@@ -584,6 +604,7 @@ namespace BlueprintMod
 
             undoStack.Add(action);
             if (undoStack.Count > Config.MaxUndoSteps) undoStack.RemoveAt(0);
+            AddPlantingGhosts(origin);
         }
 
         private void PlaceGhosts(Vector2 origin)
@@ -592,13 +613,14 @@ namespace BlueprintMod
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
-                placedGhosts.Add(new GhostItem { Tile = targetTile, ItemId = item.ItemId });
+                AddGhost(new GhostItem { Tile = targetTile, ItemId = item.ItemId });
             }
+            AddPlantingGhosts(origin);
         }
 
         private void HandleGhostFilling(Vector2 tile)
         {
-            var ghost = placedGhosts.FirstOrDefault(g => g.Tile == tile && Game1.player.ActiveItem?.QualifiedItemId == g.ItemId);
+            var ghost = placedGhosts.FirstOrDefault(g => !g.IsPlantingHint && g.Tile == tile && Game1.player.ActiveItem?.QualifiedItemId == g.ItemId);
             if (ghost != null)
             {
                 string reqId = ghost.ItemId;
@@ -640,6 +662,92 @@ namespace BlueprintMod
                 int y = (int)((tile.Y + 1) * 64 - Game1.viewport.Y - height);
                 b.Draw(itemData.GetTexture(), new Rectangle(x, y, width, height), sourceRect, tint * alpha);
             }
+        }
+
+        private void AddPlantingGhosts(Vector2 origin)
+        {
+            if (currentPlantingPlans == null || currentPlantingPlans.Count == 0)
+                return;
+
+            foreach (var plan in currentPlantingPlans)
+            {
+                Vector2 targetTile = new Vector2(origin.X + plan.TileX, origin.Y + plan.TileY);
+                AddGhost(new GhostItem
+                {
+                    Tile = targetTile,
+                    ItemId = plan.SeedItemId,
+                    IsPlantingHint = true,
+                    PlantingMode = plan.Mode,
+                    DisplayName = plan.DisplayName
+                });
+            }
+        }
+
+        private void AddGhost(GhostItem ghost)
+        {
+            if (ghost == null)
+                return;
+
+            bool exists = placedGhosts.Any(existing =>
+                existing.Tile == ghost.Tile &&
+                existing.ItemId == ghost.ItemId &&
+                existing.IsPlantingHint == ghost.IsPlantingHint &&
+                existing.PlantingMode == ghost.PlantingMode);
+
+            if (!exists)
+                placedGhosts.Add(ghost);
+        }
+
+        private bool IsGhostSatisfied(GhostItem ghost)
+        {
+            Vector2 tile = ghost.Tile;
+            if (!ghost.IsPlantingHint)
+            {
+                if (Game1.currentLocation.Objects.TryGetValue(tile, out var obj) && obj.QualifiedItemId == ghost.ItemId)
+                    return true;
+
+                if (Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var feature) && feature is StardewValley.TerrainFeatures.Flooring flooring)
+                    return "(O)" + (flooring.GetData()?.ItemId ?? "") == ghost.ItemId;
+
+                return false;
+            }
+
+            if (ghost.PlantingMode == PlantingMode.IndoorPot)
+            {
+                if (!Game1.currentLocation.Objects.TryGetValue(tile, out var obj))
+                    return false;
+
+                object hoeDirtRef = GetMemberValue(obj, "hoeDirt");
+                object hoeDirt = UnwrapNetValue(hoeDirtRef);
+                object crop = hoeDirt != null ? GetMemberValue(hoeDirt, "crop") : null;
+                return UnwrapNetValue(crop) != null;
+            }
+
+            if (!Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var terrainFeature))
+                return false;
+
+            if (terrainFeature is not StardewValley.TerrainFeatures.HoeDirt dirt)
+                return false;
+
+            object plantedCrop = GetMemberValue(dirt, "crop");
+            return UnwrapNetValue(plantedCrop) != null;
+        }
+
+        private void DrawPlantingHintBackground(SpriteBatch b, GhostItem ghost)
+        {
+            Color baseColor = ghost.PlantingMode == PlantingMode.IndoorPot
+                ? new Color(77, 128, 214) * 0.35f
+                : new Color(92, 168, 96) * 0.35f;
+
+            int x = (int)(ghost.Tile.X * 64 - Game1.viewport.X);
+            int y = (int)(ghost.Tile.Y * 64 - Game1.viewport.Y);
+            b.Draw(Game1.staminaRect, new Rectangle(x + 6, y + 6, 52, 52), baseColor);
+        }
+
+        private GhostItem GetHoveredPlantingGhost()
+        {
+            Vector2 cursorTile = Helper.Input.GetCursorPosition().Tile;
+            return placedGhosts.FirstOrDefault(ghost => ghost.IsPlantingHint && ghost.Tile == new Vector2((int)cursorTile.X, (int)cursorTile.Y));
         }
 
         private bool IsTerrainFeatureBlocked(StardewValley.TerrainFeatures.TerrainFeature feature, BlueprintItem itemAtTile, bool hasPlantingPlan)
@@ -951,7 +1059,14 @@ namespace BlueprintMod
         public bool RequiresWateredHoeDirt { get; set; }
         public string Season { get; set; }
     }
-    public class GhostItem { public Vector2 Tile { get; set; } public string ItemId { get; set; } }
+    public class GhostItem
+    {
+        public Vector2 Tile { get; set; }
+        public string ItemId { get; set; }
+        public bool IsPlantingHint { get; set; }
+        public PlantingMode PlantingMode { get; set; }
+        public string DisplayName { get; set; }
+    }
 
     public class TileChange
     {
