@@ -128,6 +128,16 @@ namespace BlueprintMod
                 b.DrawString(Game1.dialogueFont, hoveredBlueprintName, new Vector2(previewX + 30, this.yPositionOnScreen + 40), Color.DarkSlateGray, 0f, Vector2.Zero, 0.6f, SpriteEffects.None, 0f);
                 
                 var requirements = hoveredBlueprint.Items.GroupBy(i => i.ItemId).Select(g => new { ItemId = g.Key, Count = g.Count() }).ToList();
+                var plantingRequirements = (hoveredBlueprint.PlantingPlans ?? new List<PlantingPlan>())
+                    .GroupBy(plan => new { plan.SeedItemId, plan.Mode, plan.DisplayName })
+                    .Select(g => new
+                    {
+                        g.Key.SeedItemId,
+                        g.Key.Mode,
+                        DisplayName = string.IsNullOrWhiteSpace(g.Key.DisplayName) ? g.Key.SeedItemId : g.Key.DisplayName,
+                        Count = g.Count()
+                    })
+                    .ToList();
                 int yOffset = this.yPositionOnScreen + 100;
                 
                 b.DrawString(Game1.smallFont, helper.Translation.Get("msg.shopping-list"), new Vector2(previewX + 30, yOffset), Color.Blue);
@@ -148,6 +158,29 @@ namespace BlueprintMod
                 if (requirements.Count > 12)
                 {
                     b.DrawString(Game1.smallFont, "...", new Vector2(previewX + 30, yOffset), Color.Gray);
+                }
+
+                if (plantingRequirements.Count > 0)
+                {
+                    yOffset += 20;
+                    b.DrawString(Game1.smallFont, helper.Translation.Get("msg.planting-list"), new Vector2(previewX + 30, yOffset), Color.ForestGreen);
+                    yOffset += 35;
+
+                    foreach (var req in plantingRequirements.Take(8))
+                    {
+                        ParsedItemData itemData = ItemRegistry.GetData(req.SeedItemId);
+                        int hasCount = getTotalItemCount(req.SeedItemId);
+                        if (itemData != null)
+                            b.Draw(itemData.GetTexture(), new Rectangle(previewX + 30, yOffset, 32, 32), itemData.GetSourceRect(), Color.White);
+
+                        string modeText = helper.Translation.Get(req.Mode == PlantingMode.IndoorPot ? "msg.planting-mode-pot" : "msg.planting-mode-ground");
+                        string statusText = $"{req.DisplayName} {hasCount}/{req.Count} [{modeText}]";
+                        b.DrawString(Game1.smallFont, statusText, new Vector2(previewX + 70, yOffset + 4), hasCount >= req.Count ? Color.Green : Color.Red);
+                        yOffset += 35;
+                    }
+
+                    if (plantingRequirements.Count > 8)
+                        b.DrawString(Game1.smallFont, "...", new Vector2(previewX + 30, yOffset), Color.Gray);
                 }
             }
             else

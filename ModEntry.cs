@@ -11,6 +11,7 @@ using StardewValley.Menus;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 
 namespace BlueprintMod
 {
@@ -27,6 +28,7 @@ namespace BlueprintMod
         private List<PlacementAction> undoStack = new List<PlacementAction>();
         private bool isCreativeMode = false;
         private bool isOverwriteMode = true;
+        private List<PlantingPlan> currentPlantingPlans = new List<PlantingPlan>();
 
         private Vector2? pendingTile = null;
 
@@ -242,6 +244,7 @@ namespace BlueprintMod
         {
             Vector2 mouseTile = new Vector2((int)Helper.Input.GetCursorPosition().Tile.X, (int)Helper.Input.GetCursorPosition().Tile.Y);
             bool hasCollision = false;
+            var plantingLookup = currentPlantingPlans.ToLookup(plan => new Vector2(plan.TileX, plan.TileY));
 
             if (!isOverwriteMode)
             {
@@ -250,15 +253,13 @@ namespace BlueprintMod
                     for (int y = 0; y < currentMetadata.Height; y++)
                     {
                         Vector2 targetTile = new Vector2(mouseTile.X + x, mouseTile.Y + y);
+                        Vector2 relativeTile = new Vector2(x, y);
                         var itemAtTile = previewItems.FirstOrDefault(i => (int)i.TileX == x && (int)i.TileY == y);
+                        bool hasPlantingPlan = plantingLookup[relativeTile].Any();
                         if (Game1.currentLocation.Objects.TryGetValue(targetTile, out var worldObj) && !IsDebris(worldObj)) { hasCollision = true; break; }
                         if (Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature))
                         {
-                            if (feature is StardewValley.TerrainFeatures.Flooring wf)
-                            {
-                                if (itemAtTile != null && itemAtTile.ItemType == "Flooring" && wf.whichFloor.Value != itemAtTile.FlooringId) { hasCollision = true; break; }
-                            }
-                            else { hasCollision = true; break; }
+                            if (IsTerrainFeatureBlocked(feature, itemAtTile, hasPlantingPlan)) { hasCollision = true; break; }
                         }
                     }
                     if (hasCollision) break;
@@ -289,6 +290,7 @@ namespace BlueprintMod
                                 foreach (var req in savedRequirements) ConsumeItems(req.ItemId, req.Count);
                                 previewItems = savedPreviewItems;
                                 PlaceBlueprintReal(pendingTile.Value, savedRequirements);
+                                ShowPlantingPlanHint();
                                 previewItems = null;
                                 Game1.playSound("purchase");
                             }
@@ -304,7 +306,14 @@ namespace BlueprintMod
                 }
             }
 
-            if (isCreativeMode) PlaceBlueprintReal(mouseTile); else PlaceGhosts(mouseTile);
+            if (isCreativeMode)
+            {
+                PlaceBlueprintReal(mouseTile);
+                ShowPlantingPlanHint();
+            }
+            else
+                PlaceGhosts(mouseTile);
+
             isPreviewMode = false; previewItems = null; Game1.playSound("purchase");
         }
 
@@ -323,6 +332,7 @@ namespace BlueprintMod
             {
                 Vector2 mouseTile = new Vector2((int)Helper.Input.GetCursorPosition().Tile.X, (int)Helper.Input.GetCursorPosition().Tile.Y);
                 var itemLookup = previewItems.ToLookup(i => new Vector2(i.TileX, i.TileY));
+                var plantingLookup = currentPlantingPlans.ToLookup(plan => new Vector2(plan.TileX, plan.TileY));
 
                 for (int x = 0; x < currentMetadata.Width; x++)
                 {
@@ -331,6 +341,7 @@ namespace BlueprintMod
                         Vector2 relativeTile = new Vector2(x, y);
                         Vector2 targetTile = new Vector2(mouseTile.X + x, mouseTile.Y + y);
                         var itemsAtTile = itemLookup[relativeTile];
+                        var plantingPlansAtTile = plantingLookup[relativeTile];
                         
                         bool tileBlockedByObject = Game1.currentLocation.Objects.TryGetValue(targetTile, out var worldObj) && !IsDebris(worldObj);
                         
@@ -344,11 +355,7 @@ namespace BlueprintMod
                                     if (tileBlockedByObject) isBlocked = true;
                                     else if (Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature))
                                     {
-                                        if (feature is StardewValley.TerrainFeatures.Flooring wf)
-                                        {
-                                            if (item.ItemType == "Flooring" && wf.whichFloor.Value != item.FlooringId) isBlocked = true;
-                                        }
-                                        else isBlocked = true;
+                                        isBlocked = IsTerrainFeatureBlocked(feature, item, plantingPlansAtTile.Any());
                                     }
                                 }
                                 DrawGhost(e.SpriteBatch, targetTile, item.ItemId, 0.5f, isBlocked ? Color.Red * 0.8f : (isCreativeMode ? Color.LightGreen : Color.Cyan));
@@ -357,8 +364,15 @@ namespace BlueprintMod
                         else if (!isOverwriteMode)
                         {
                             bool isBlocked = tileBlockedByObject;
-                            if (!isBlocked && Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature) && !(feature is StardewValley.TerrainFeatures.Flooring)) isBlocked = true;
+                            if (!isBlocked && Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature))
+                                isBlocked = IsTerrainFeatureBlocked(feature, null, plantingPlansAtTile.Any());
                             if (isBlocked) DrawSelectionBox(e.SpriteBatch, targetTile, targetTile, Color.Red * 0.2f);
+                        }
+
+                        foreach (var plan in plantingPlansAtTile)
+                        {
+                            bool isBlocked = tileBlockedByObject || IsPlantingPlanBlocked(targetTile, plan);
+                            DrawGhost(e.SpriteBatch, targetTile, plan.SeedItemId, 0.55f, isBlocked ? Color.OrangeRed * 0.9f : Color.YellowGreen * 0.9f, 0.8f);
                         }
                     }
                 }
@@ -375,6 +389,11 @@ namespace BlueprintMod
                 string creativeModeText = Helper.Translation.Get(isCreativeMode ? "msg.mode-creative-short" : "msg.mode-survival-short");
                 string topText = Helper.Translation.Get("msg.hud-blueprint", new { name = displayName, overwrite = overwriteModeText, creative = creativeModeText });
                 e.SpriteBatch.DrawString(Game1.dialogueFont, topText, new Vector2(80, 80), Color.White);
+                if (currentPlantingPlans.Count > 0)
+                {
+                    string plantingText = Helper.Translation.Get("msg.hud-planting", new { count = currentPlantingPlans.Count });
+                    e.SpriteBatch.DrawString(Game1.smallFont, plantingText, new Vector2(80, 120), Color.LightGreen);
+                }
                 DrawShoppingList(e.SpriteBatch);
             }
         }
@@ -384,7 +403,14 @@ namespace BlueprintMod
             if (previewItems == null) return;
             var requirements = previewItems.GroupBy(i => i.ItemId).Select(g => new { ItemId = g.Key, RequiredCount = g.Count() }).ToList();
             int xPos = Game1.uiViewport.Width - 300, yPos = 150;
-            b.Draw(Game1.staminaRect, new Rectangle(xPos - 10, yPos - 10, 280, requirements.Count * 40 + 60), Color.Black * 0.5f);
+            int plantingRows = currentPlantingPlans
+                .GroupBy(plan => new { plan.SeedItemId, plan.Mode })
+                .Count();
+            int panelHeight = requirements.Count * 40 + 60;
+            if (plantingRows > 0)
+                panelHeight += plantingRows * 35 + 55;
+
+            b.Draw(Game1.staminaRect, new Rectangle(xPos - 10, yPos - 10, 280, panelHeight), Color.Black * 0.5f);
             b.DrawString(Game1.dialogueFont, Helper.Translation.Get("msg.shopping-list"), new Vector2(xPos, yPos), Color.Gold, 0f, Vector2.Zero, 0.8f, SpriteEffects.None, 0f);
             yPos += 40;
             foreach (var req in requirements)
@@ -395,6 +421,37 @@ namespace BlueprintMod
                 {
                     b.Draw(itemData.GetTexture(), new Rectangle(xPos, yPos, 32, 32), itemData.GetSourceRect(), Color.White);
                     b.DrawString(Game1.smallFont, $"{req.RequiredCount} ({totalHas})", new Vector2(xPos + 40, yPos + 4), totalHas >= req.RequiredCount ? Color.White : Color.Red);
+                    yPos += 35;
+                }
+            }
+
+            var plantingRequirements = currentPlantingPlans
+                .GroupBy(plan => new { plan.SeedItemId, plan.Mode, plan.DisplayName })
+                .Select(g => new
+                {
+                    g.Key.SeedItemId,
+                    g.Key.Mode,
+                    DisplayName = string.IsNullOrWhiteSpace(g.Key.DisplayName) ? g.Key.SeedItemId : g.Key.DisplayName,
+                    RequiredCount = g.Count()
+                })
+                .ToList();
+
+            if (plantingRequirements.Count > 0)
+            {
+                yPos += 10;
+                b.DrawString(Game1.dialogueFont, Helper.Translation.Get("msg.planting-list"), new Vector2(xPos, yPos), Color.LightGreen, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
+                yPos += 35;
+
+                foreach (var req in plantingRequirements)
+                {
+                    int totalHas = GetTotalItemCount(req.SeedItemId);
+                    ParsedItemData itemData = ItemRegistry.GetData(req.SeedItemId);
+                    if (itemData != null)
+                        b.Draw(itemData.GetTexture(), new Rectangle(xPos, yPos, 32, 32), itemData.GetSourceRect(), Color.White);
+
+                    string modeText = Helper.Translation.Get(req.Mode == PlantingMode.IndoorPot ? "msg.planting-mode-pot" : "msg.planting-mode-ground");
+                    string text = $"{req.DisplayName} x{req.RequiredCount} ({totalHas}) [{modeText}]";
+                    b.DrawString(Game1.smallFont, text, new Vector2(xPos + 40, yPos + 4), totalHas >= req.RequiredCount ? Color.White : Color.Red);
                     yPos += 35;
                 }
             }
@@ -571,18 +628,52 @@ namespace BlueprintMod
             }
         }
 
-        private void DrawGhost(SpriteBatch b, Vector2 tile, string itemId, float alpha, Color tint)
+        private void DrawGhost(SpriteBatch b, Vector2 tile, string itemId, float alpha, Color tint, float scale = 1f)
         {
             ParsedItemData itemData = ItemRegistry.GetData(itemId);
             if (itemData != null)
             {
                 Rectangle sourceRect = itemData.GetSourceRect();
-                int width = sourceRect.Width * 4;
-                int height = sourceRect.Height * 4;
-                int x = (int)(tile.X * 64 - Game1.viewport.X);
+                int width = (int)(sourceRect.Width * 4 * scale);
+                int height = (int)(sourceRect.Height * 4 * scale);
+                int x = (int)(tile.X * 64 - Game1.viewport.X + (64 - width) / 2f);
                 int y = (int)((tile.Y + 1) * 64 - Game1.viewport.Y - height);
                 b.Draw(itemData.GetTexture(), new Rectangle(x, y, width, height), sourceRect, tint * alpha);
             }
+        }
+
+        private bool IsTerrainFeatureBlocked(StardewValley.TerrainFeatures.TerrainFeature feature, BlueprintItem itemAtTile, bool hasPlantingPlan)
+        {
+            if (feature == null)
+                return false;
+
+            if (feature is StardewValley.TerrainFeatures.Flooring flooring)
+                return itemAtTile != null && itemAtTile.ItemType == "Flooring" && flooring.whichFloor.Value != itemAtTile.FlooringId;
+
+            // Tilled soil is common in farm-design blueprints, so don't reject it as a hard collision in safe mode.
+            if (feature is StardewValley.TerrainFeatures.HoeDirt)
+                return false;
+
+            return !hasPlantingPlan;
+        }
+
+        private bool IsPlantingPlanBlocked(Vector2 targetTile, PlantingPlan plan)
+        {
+            if (plan == null)
+                return false;
+
+            if (plan.Mode == PlantingMode.IndoorPot)
+            {
+                if (!Game1.currentLocation.Objects.TryGetValue(targetTile, out var obj))
+                    return true;
+
+                return obj.GetType().FullName != "StardewValley.Objects.IndoorPot";
+            }
+
+            if (!Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature))
+                return true;
+
+            return feature is not StardewValley.TerrainFeatures.HoeDirt;
         }
 
         private void DrawSelectionBox(SpriteBatch b, Vector2 start, Vector2 end, Color color)
@@ -631,15 +722,35 @@ namespace BlueprintMod
         {
             int minX = (int)Math.Min(start.X, end.X), maxX = (int)Math.Max(start.X, end.X), minY = (int)Math.Min(start.Y, end.Y), maxY = (int)Math.Max(start.Y, end.Y);
             var items = new List<BlueprintItem>();
+            var plantingPlans = new List<PlantingPlan>();
             foreach (var tile in location.Objects.Keys.Where(t => t.X >= minX && t.X <= maxX && t.Y >= minY && t.Y <= maxY))
+            {
                 items.Add(new BlueprintItem { ItemId = location.Objects[tile].QualifiedItemId, TileX = tile.X - minX, TileY = tile.Y - minY, Name = location.Objects[tile].DisplayName, ItemType = "Object" });
+                PlantingPlan indoorPotPlan = TryCreateIndoorPotPlantingPlan(location.Objects[tile], (int)(tile.X - minX), (int)(tile.Y - minY));
+                if (indoorPotPlan != null)
+                    plantingPlans.Add(indoorPotPlan);
+            }
             foreach (var pair in location.terrainFeatures.Pairs.Where(p => p.Key.X >= minX && p.Key.X <= maxX && p.Key.Y >= minY && p.Key.Y <= maxY))
-                if (pair.Value is StardewValley.TerrainFeatures.Flooring f) items.Add(new BlueprintItem { ItemId = "(O)" + (f.GetData()?.ItemId ?? ""), FlooringId = f.whichFloor.Value, TileX = pair.Key.X - minX, TileY = pair.Key.Y - minY, Name = "Flooring", ItemType = "Flooring" });
+            {
+                if (pair.Value is StardewValley.TerrainFeatures.Flooring f)
+                    items.Add(new BlueprintItem { ItemId = "(O)" + (f.GetData()?.ItemId ?? ""), FlooringId = f.whichFloor.Value, TileX = pair.Key.X - minX, TileY = pair.Key.Y - minY, Name = "Flooring", ItemType = "Flooring" });
+                else if (pair.Value is StardewValley.TerrainFeatures.HoeDirt dirt)
+                {
+                    PlantingPlan groundPlan = TryCreateGroundPlantingPlan(dirt, (int)(pair.Key.X - minX), (int)(pair.Key.Y - minY));
+                    if (groundPlan != null)
+                        plantingPlans.Add(groundPlan);
+                }
+            }
 
-            if (items.Count > 0)
+            if (items.Count > 0 || plantingPlans.Count > 0)
             {
                 string safeName = string.Join("_", name.Split(Path.GetInvalidFileNameChars()));
-                var data = new BlueprintFile { Metadata = new BlueprintMetadata { Name = name, Width = maxX - minX + 1, Height = maxY - minY + 1 }, Items = items };
+                var data = new BlueprintFile
+                {
+                    Metadata = new BlueprintMetadata { Name = name, Width = maxX - minX + 1, Height = maxY - minY + 1 },
+                    Items = items,
+                    PlantingPlans = plantingPlans
+                };
                 this.Helper.Data.WriteJsonFile($"blueprints/{safeName}_{DateTime.Now:yyyyMMdd_HHmmss}.json", data);
                 Game1.playSound("drumkit0");
                 Game1.showGlobalMessage(Helper.Translation.Get("msg.save-success", new { name = name }));
@@ -675,12 +786,133 @@ namespace BlueprintMod
             {
                 previewItems = file.Items;
                 currentMetadata = file.Metadata;
+                currentPlantingPlans = file.PlantingPlans ?? new List<PlantingPlan>();
             }
             else
             {
                 Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.error-parse-failed"), 1));
                 isPreviewMode = false;
             }
+        }
+
+        private void ShowPlantingPlanHint()
+        {
+            if (currentPlantingPlans == null || currentPlantingPlans.Count == 0)
+                return;
+
+            int groundCount = currentPlantingPlans.Count(plan => plan.Mode == PlantingMode.Ground);
+            int potCount = currentPlantingPlans.Count(plan => plan.Mode == PlantingMode.IndoorPot);
+            Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.planting-summary", new { total = currentPlantingPlans.Count, ground = groundCount, pot = potCount }), 2));
+        }
+
+        private PlantingPlan TryCreateGroundPlantingPlan(StardewValley.TerrainFeatures.HoeDirt dirt, int tileX, int tileY)
+        {
+            object crop = GetMemberValue(dirt, "crop");
+            return CreatePlantingPlanFromCrop(crop, tileX, tileY, PlantingMode.Ground, requiresPot: false, requiresWateredHoeDirt: true);
+        }
+
+        private PlantingPlan TryCreateIndoorPotPlantingPlan(StardewValley.Object obj, int tileX, int tileY)
+        {
+            if (obj == null || obj.GetType().FullName != "StardewValley.Objects.IndoorPot")
+                return null;
+
+            object hoeDirtRef = GetMemberValue(obj, "hoeDirt");
+            object hoeDirt = UnwrapNetValue(hoeDirtRef);
+            object crop = hoeDirt != null ? GetMemberValue(hoeDirt, "crop") : null;
+            return CreatePlantingPlanFromCrop(crop, tileX, tileY, PlantingMode.IndoorPot, requiresPot: true, requiresWateredHoeDirt: false);
+        }
+
+        private PlantingPlan CreatePlantingPlanFromCrop(object cropRef, int tileX, int tileY, PlantingMode mode, bool requiresPot, bool requiresWateredHoeDirt)
+        {
+            object crop = UnwrapNetValue(cropRef);
+            if (crop == null)
+                return null;
+
+            string seedItemId = GetCropSeedItemId(crop);
+            if (string.IsNullOrWhiteSpace(seedItemId))
+                return null;
+
+            ParsedItemData seedData = ItemRegistry.GetData(seedItemId);
+            return new PlantingPlan
+            {
+                TileX = tileX,
+                TileY = tileY,
+                Mode = mode,
+                SeedItemId = seedItemId,
+                CropId = GetCropHarvestId(crop),
+                DisplayName = seedData?.DisplayName ?? seedItemId,
+                RequiresPot = requiresPot,
+                RequiresWateredHoeDirt = requiresWateredHoeDirt,
+                Season = GetCropSeason(crop)
+            };
+        }
+
+        private string GetCropSeedItemId(object crop)
+        {
+            object seedIndexRef = GetMemberValue(crop, "netSeedIndex") ?? GetMemberValue(crop, "seedIndex");
+            object seedIndex = UnwrapNetValue(seedIndexRef);
+            if (seedIndex == null)
+                return null;
+
+            string value = seedIndex.ToString();
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            return value.StartsWith("(O)") ? value : $"(O){value}";
+        }
+
+        private string GetCropHarvestId(object crop)
+        {
+            object harvestRef = GetMemberValue(crop, "indexOfHarvest") ?? GetMemberValue(crop, "netHarvestItem");
+            object harvest = UnwrapNetValue(harvestRef);
+            return harvest?.ToString();
+        }
+
+        private string GetCropSeason(object crop)
+        {
+            object seasonsObj = GetMemberValue(crop, "seasonsToGrowIn");
+            if (seasonsObj is IEnumerable<string> seasonStrings)
+                return string.Join(", ", seasonStrings);
+
+            if (seasonsObj is System.Collections.IEnumerable seasonsEnumerable)
+            {
+                var seasons = new List<string>();
+                foreach (object season in seasonsEnumerable)
+                {
+                    if (season != null)
+                        seasons.Add(season.ToString());
+                }
+
+                if (seasons.Count > 0)
+                    return string.Join(", ", seasons);
+            }
+
+            return null;
+        }
+
+        private object GetMemberValue(object instance, string memberName)
+        {
+            if (instance == null)
+                return null;
+
+            Type type = instance.GetType();
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            PropertyInfo property = type.GetProperty(memberName, flags);
+            if (property != null)
+                return property.GetValue(instance);
+
+            FieldInfo field = type.GetField(memberName, flags);
+            return field?.GetValue(instance);
+        }
+
+        private object UnwrapNetValue(object value)
+        {
+            if (value == null)
+                return null;
+
+            PropertyInfo property = value.GetType().GetProperty("Value", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return property != null ? property.GetValue(value) : value;
         }
     }
 
@@ -703,9 +935,22 @@ namespace BlueprintMod
         }
     }
 
-    public class BlueprintFile { public BlueprintMetadata Metadata { get; set; } public List<BlueprintItem> Items { get; set; } }
+    public class BlueprintFile { public BlueprintMetadata Metadata { get; set; } public List<BlueprintItem> Items { get; set; } public List<PlantingPlan> PlantingPlans { get; set; } = new List<PlantingPlan>(); }
     public class BlueprintMetadata { public string Name { get; set; } public int Width { get; set; } public int Height { get; set; } }
     public class BlueprintItem { public string ItemId { get; set; } public string FlooringId { get; set; } public float TileX { get; set; } public float TileY { get; set; } public string Name { get; set; } public string ItemType { get; set; } = "Object"; }
+    public enum PlantingMode { Ground, IndoorPot }
+    public class PlantingPlan
+    {
+        public float TileX { get; set; }
+        public float TileY { get; set; }
+        public PlantingMode Mode { get; set; }
+        public string SeedItemId { get; set; }
+        public string CropId { get; set; }
+        public string DisplayName { get; set; }
+        public bool RequiresPot { get; set; }
+        public bool RequiresWateredHoeDirt { get; set; }
+        public string Season { get; set; }
+    }
     public class GhostItem { public Vector2 Tile { get; set; } public string ItemId { get; set; } }
 
     public class TileChange
