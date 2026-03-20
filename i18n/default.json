@@ -23,5 +23,6 @@
     "config.overwrite-mode-key": "切换覆盖模式按键",
     "config.undo-key": "撤销一键放置按键",
     "config.preview-key": "打开蓝图浏览器/预览按键",
-    "config.clear-ghosts-key": "清除所有虚影按键"
+    "config.clear-ghosts-key": "清除所有虚影按键",
+    "config.chest-range": "箱子搜索范围"
 }

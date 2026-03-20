@@ -15,5 +15,6 @@ namespace BlueprintMod
         public bool DefaultOverwriteMode { get; set; } = true;
         public bool DefaultCreativeMode { get; set; } = false;
         public int MaxUndoSteps { get; set; } = 10;
+        public int ChestSearchRange { get; set; } = 10;
     }
 }

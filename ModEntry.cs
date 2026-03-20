@@ -57,6 +57,16 @@ namespace BlueprintMod
                 configMenu.AddKeybind(ModManifest, () => Config.OpenBlueprintBrowser, val => Config.OpenBlueprintBrowser = val, () => Helper.Translation.Get("config.preview-key"));
                 configMenu.AddKeybind(ModManifest, () => Config.ClearGhosts, val => Config.ClearGhosts = val, () => Helper.Translation.Get("config.clear-ghosts-key"));
                 configMenu.AddBoolOption(ModManifest, () => Config.DefaultOverwriteMode, val => Config.DefaultOverwriteMode = val, () => "默认开启覆盖模式");
+                configMenu.AddNumberOption(
+                    mod: ModManifest,
+                    getValue: () => Config.ChestSearchRange,
+                    setValue: val => Config.ChestSearchRange = val,
+                    name: () => Helper.Translation.Get("config.chest-range"),
+                    tooltip: () => "从箱子里拿东西的范围，0=无限",
+                    min: 0,
+                    max: 100,
+                    interval: 1
+                );
             }
         }
 
@@ -315,16 +325,32 @@ namespace BlueprintMod
 
         private IEnumerable<StardewValley.Objects.Chest> GetAllChests()
         {
-            var locations = new List<GameLocation> { Game1.currentLocation };
-            var farm = Game1.getFarm();
-            if (farm != null && !locations.Contains(farm)) locations.Add(farm);
-
-            foreach (GameLocation location in locations)
+            if (Config.ChestSearchRange <= 0)
             {
-                foreach (var obj in location.Objects.Values)
+                var locations = new List<GameLocation> { Game1.currentLocation };
+                var farm = Game1.getFarm();
+                if (farm != null && !locations.Contains(farm)) locations.Add(farm);
+
+                foreach (GameLocation location in locations)
+                {
+                    foreach (var obj in location.Objects.Values)
+                    {
+                        if (obj is StardewValley.Objects.Chest chest && chest.playerChest.Value && !chest.fridge.Value)
+                            yield return chest;
+                    }
+                }
+            }
+            else
+            {
+                foreach (var obj in Game1.currentLocation.Objects.Values)
                 {
                     if (obj is StardewValley.Objects.Chest chest && chest.playerChest.Value && !chest.fridge.Value)
-                        yield return chest;
+                    {
+                        if (Vector2.Distance(Game1.player.Tile, chest.TileLocation) <= Config.ChestSearchRange)
+                        {
+                            yield return chest;
+                        }
+                    }
                 }
             }
         }
@@ -398,7 +424,11 @@ namespace BlueprintMod
                 else
                 {
                     Item newItem = ItemRegistry.Create(item.ItemId);
-                    if (newItem is StardewValley.Object obj) { obj.TileLocation = targetTile; Game1.currentLocation.Objects.Add(targetTile, obj); }
+                    if (newItem is StardewValley.Object obj)
+                    {
+                        obj.TileLocation = targetTile;
+                        obj.placementAction(Game1.currentLocation, (int)targetTile.X * 64, (int)targetTile.Y * 64, Game1.player);
+                    }
                 }
             }
 
@@ -435,8 +465,8 @@ namespace BlueprintMod
                 }
                 else if (!Game1.currentLocation.Objects.ContainsKey(tile))
                 {
-                    Game1.currentLocation.Objects.Add(tile, (StardewValley.Object)ItemRegistry.Create(reqId));
-                    placed = true;
+                    var newObj = (StardewValley.Object)ItemRegistry.Create(reqId);
+                    placed = newObj.placementAction(Game1.currentLocation, (int)tile.X * 64, (int)tile.Y * 64, Game1.player);
                 }
                 if (placed)
                 {
@@ -566,6 +596,7 @@ namespace BlueprintMod
         void Register(IManifest mod, Action reset, Action save, bool titleScreenOnly = false);
         void AddKeybind(IManifest mod, Func<SButton> getValue, Action<SButton> setValue, Func<string> name, Func<string> tooltip = null, string fieldId = null);
         void AddBoolOption(IManifest mod, Func<bool> getValue, Action<bool> setValue, Func<string> name, Func<string> tooltip = null, string fieldId = null);
+        void AddNumberOption(IManifest mod, Func<int> getValue, Action<int> setValue, Func<string> name, Func<string> tooltip = null, int? min = null, int? max = null, int? interval = null, string fieldId = null);
     }
 
 
