@@ -104,7 +104,7 @@ namespace BlueprintMod
         private void OnUpdateTicked(object sender, UpdateTickedEventArgs e)
         {
             if (!e.IsMultipleOf(20) || placedGhosts.Count == 0 || Game1.currentLocation == null) return;
-            placedGhosts.RemoveAll(IsGhostSatisfied);
+            placedGhosts.RemoveAll(ghost => IsGhostInCurrentLocation(ghost) && IsGhostSatisfied(ghost));
         }
 
         private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
@@ -369,15 +369,12 @@ namespace BlueprintMod
                     }
                 }
             }
-            foreach (var ghost in placedGhosts)
+            foreach (var ghost in placedGhosts.Where(IsGhostInCurrentLocation))
             {
                 if (ghost.IsPlantingHint)
                     DrawPlantingHintBackground(e.SpriteBatch, ghost);
 
-                Color tint = ghost.IsPlantingHint ? Color.YellowGreen * 0.9f : Color.White * 0.6f;
-                float scale = ghost.IsPlantingHint ? 0.8f : 1f;
-                float alpha = ghost.IsPlantingHint ? 0.55f : 0.4f;
-                DrawGhost(e.SpriteBatch, ghost.Tile, ghost.ItemId, alpha, tint, scale);
+                DrawGhost(e.SpriteBatch, ghost.Tile, ghost.ItemId, GetGhostAlpha(ghost), GetGhostTint(ghost), GetGhostScale(ghost));
             }
         }
 
@@ -604,7 +601,7 @@ namespace BlueprintMod
 
             undoStack.Add(action);
             if (undoStack.Count > Config.MaxUndoSteps) undoStack.RemoveAt(0);
-            AddPlantingGhosts(origin);
+            action.AddedGhosts.AddRange(AddPlantingGhosts(origin));
         }
 
         private void PlaceGhosts(Vector2 origin)
@@ -613,14 +610,14 @@ namespace BlueprintMod
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
-                AddGhost(new GhostItem { Tile = targetTile, ItemId = item.ItemId });
+                AddGhost(new GhostItem { Tile = targetTile, ItemId = item.ItemId, LocationName = Game1.currentLocation?.NameOrUniqueName });
             }
             AddPlantingGhosts(origin);
         }
 
         private void HandleGhostFilling(Vector2 tile)
         {
-            var ghost = placedGhosts.FirstOrDefault(g => !g.IsPlantingHint && g.Tile == tile && Game1.player.ActiveItem?.QualifiedItemId == g.ItemId);
+            var ghost = placedGhosts.FirstOrDefault(g => !g.IsPlantingHint && IsGhostInCurrentLocation(g) && g.Tile == tile && Game1.player.ActiveItem?.QualifiedItemId == g.ItemId);
             if (ghost != null)
             {
                 string reqId = ghost.ItemId;
@@ -664,38 +661,72 @@ namespace BlueprintMod
             }
         }
 
-        private void AddPlantingGhosts(Vector2 origin)
+        private bool IsGhostInCurrentLocation(GhostItem ghost)
+        {
+            return ghost?.LocationName == Game1.currentLocation?.NameOrUniqueName;
+        }
+
+        private Color GetGhostTint(GhostItem ghost)
+        {
+            return ghost.IsPlantingHint ? Color.YellowGreen * 0.9f : Color.White * 0.6f;
+        }
+
+        private float GetGhostScale(GhostItem ghost)
+        {
+            return ghost.IsPlantingHint ? 0.8f : 1f;
+        }
+
+        private float GetGhostAlpha(GhostItem ghost)
+        {
+            return ghost.IsPlantingHint ? 0.55f : 0.4f;
+        }
+
+        private List<GhostItem> AddPlantingGhosts(Vector2 origin)
         {
             if (currentPlantingPlans == null || currentPlantingPlans.Count == 0)
-                return;
+                return new List<GhostItem>();
+
+            var addedGhosts = new List<GhostItem>();
 
             foreach (var plan in currentPlantingPlans)
             {
                 Vector2 targetTile = new Vector2(origin.X + plan.TileX, origin.Y + plan.TileY);
-                AddGhost(new GhostItem
+                GhostItem ghost = new GhostItem
                 {
                     Tile = targetTile,
                     ItemId = plan.SeedItemId,
                     IsPlantingHint = true,
                     PlantingMode = plan.Mode,
-                    DisplayName = plan.DisplayName
-                });
+                    DisplayName = plan.DisplayName,
+                    LocationName = Game1.currentLocation?.NameOrUniqueName
+                };
+
+                if (AddGhost(ghost))
+                    addedGhosts.Add(ghost);
             }
+
+            return addedGhosts;
         }
 
-        private void AddGhost(GhostItem ghost)
+        private bool AddGhost(GhostItem ghost)
         {
             if (ghost == null)
-                return;
+                return false;
 
             bool exists = placedGhosts.Any(existing =>
+                existing.LocationName == ghost.LocationName &&
                 existing.Tile == ghost.Tile &&
                 existing.ItemId == ghost.ItemId &&
                 existing.IsPlantingHint == ghost.IsPlantingHint &&
                 existing.PlantingMode == ghost.PlantingMode);
 
             if (!exists)
+            {
                 placedGhosts.Add(ghost);
+                return true;
+            }
+
+            return false;
         }
 
         private bool IsGhostSatisfied(GhostItem ghost)
@@ -747,7 +778,10 @@ namespace BlueprintMod
         private GhostItem GetHoveredPlantingGhost()
         {
             Vector2 cursorTile = Helper.Input.GetCursorPosition().Tile;
-            return placedGhosts.FirstOrDefault(ghost => ghost.IsPlantingHint && ghost.Tile == new Vector2((int)cursorTile.X, (int)cursorTile.Y));
+            return placedGhosts.FirstOrDefault(ghost =>
+                ghost.IsPlantingHint &&
+                IsGhostInCurrentLocation(ghost) &&
+                ghost.Tile == new Vector2((int)cursorTile.X, (int)cursorTile.Y));
         }
 
         private bool IsTerrainFeatureBlocked(StardewValley.TerrainFeatures.TerrainFeature feature, BlueprintItem itemAtTile, bool hasPlantingPlan)
@@ -815,6 +849,16 @@ namespace BlueprintMod
                 {
                     action.Location.terrainFeatures.Add(change.Tile, change.OldTerrainFeature);
                 }
+            }
+
+            if (action.AddedGhosts.Count > 0)
+            {
+                placedGhosts.RemoveAll(ghost => action.AddedGhosts.Any(added =>
+                    added.LocationName == ghost.LocationName &&
+                    added.Tile == ghost.Tile &&
+                    added.ItemId == ghost.ItemId &&
+                    added.IsPlantingHint == ghost.IsPlantingHint &&
+                    added.PlantingMode == ghost.PlantingMode));
             }
 
             foreach (var refund in action.RefundItems)
@@ -1066,6 +1110,7 @@ namespace BlueprintMod
         public bool IsPlantingHint { get; set; }
         public PlantingMode PlantingMode { get; set; }
         public string DisplayName { get; set; }
+        public string LocationName { get; set; }
     }
 
     public class TileChange
@@ -1086,6 +1131,7 @@ namespace BlueprintMod
         public GameLocation Location { get; set; }
         public List<TileChange> Changes { get; set; } = new List<TileChange>();
         public List<ItemRequirement> RefundItems { get; set; } = new List<ItemRequirement>();
+        public List<GhostItem> AddedGhosts { get; set; } = new List<GhostItem>();
     }
 
     // Local definition for IGenericModConfigMenuApi to allow compilation.
