@@ -1,6 +1,7 @@
 ﻿using System;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using Microsoft.Xna.Framework.Input;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewModdingAPI.Utilities;
@@ -166,12 +167,25 @@ namespace BlueprintMod
                     {
                         Vector2 capturedStart = startTile.Value;
                         Vector2 capturedEnd = e.Cursor.Tile;
-                        
-                        Game1.activeClickableMenu = new NamingMenu(name => {
+
+                        bool didSaveBlueprint = false;
+                        var namingMenu = new CancelableNamingMenu(name => {
+                            didSaveBlueprint = true;
                             SaveBlueprint(Game1.currentLocation, capturedStart, capturedEnd, name);
                             startTile = null;
                             Game1.exitActiveMenu();
                         }, Helper.Translation.Get("msg.naming-title"), Helper.Translation.Get("msg.naming-default"));
+
+                        namingMenu.exitFunction = () =>
+                        {
+                            if (didSaveBlueprint)
+                                return;
+
+                            startTile = null;
+                            Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.selection-canceled"), 3));
+                        };
+
+                        Game1.activeClickableMenu = namingMenu;
                     }
                 }
                 else if (e.Button == SButton.MouseRight && startTile != null)
@@ -648,6 +662,25 @@ namespace BlueprintMod
                 Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.error-parse-failed"), 1));
                 isPreviewMode = false;
             }
+        }
+    }
+
+    public class CancelableNamingMenu : NamingMenu
+    {
+        public CancelableNamingMenu(doneNamingBehavior behavior, string title, string defaultName)
+            : base(behavior, title, defaultName)
+        {
+        }
+
+        public override void receiveKeyPress(Keys key)
+        {
+            if (key == Keys.Escape)
+            {
+                this.exitThisMenu();
+                return;
+            }
+
+            base.receiveKeyPress(key);
         }
     }
 
