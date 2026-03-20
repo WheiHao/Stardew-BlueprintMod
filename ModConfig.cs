@@ -20,6 +20,7 @@ namespace BlueprintMod
         public SButton ModModifier { get; set; } = SButton.LeftControl;
 
         // === 其他配置 ===
+        public bool EnableCreativeMode { get; set; } = false;
         public bool DefaultOverwriteMode { get; set; } = true;
         public bool DefaultCreativeMode { get; set; } = false;
         public int MaxUndoSteps { get; set; } = 10;

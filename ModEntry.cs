@@ -33,7 +33,7 @@ namespace BlueprintMod
         public override void Entry(IModHelper helper)
         {
             this.Config = helper.ReadConfig<ModConfig>();
-            this.isCreativeMode = this.Config.DefaultCreativeMode;
+            this.isCreativeMode = this.Config.EnableCreativeMode && this.Config.DefaultCreativeMode;
             this.isOverwriteMode = this.Config.DefaultOverwriteMode;
 
             helper.Events.Input.ButtonPressed += OnButtonPressed;
@@ -58,6 +58,17 @@ namespace BlueprintMod
                     () => Config.ToggleCreativeMode,
                     val => Config.ToggleCreativeMode = val,
                     () => Helper.Translation.Get("config.creative-mode-key"));
+
+                configMenu.AddBoolOption(ModManifest,
+                    () => Config.EnableCreativeMode,
+                    val =>
+                    {
+                        Config.EnableCreativeMode = val;
+                        if (!val)
+                            isCreativeMode = false;
+                    },
+                    () => Helper.Translation.Get("config.enable-creative-mode"),
+                    () => Helper.Translation.Get("config.enable-creative-mode.tooltip"));
 
                 configMenu.AddKeybindList(ModManifest,
                     () => Config.ToggleOverwriteMode,
@@ -134,6 +145,14 @@ namespace BlueprintMod
             // ✅ 修复：KeybindList 判断
             if (Config.ToggleCreativeMode.JustPressed())
             {
+                if (!Config.EnableCreativeMode)
+                {
+                    isCreativeMode = false;
+                    Game1.addHUDMessage(new HUDMessage(
+                        Helper.Translation.Get("msg.creative-disabled"), 3));
+                    return;
+                }
+
                 isCreativeMode = !isCreativeMode;
                 Game1.addHUDMessage(new HUDMessage(
                     Helper.Translation.Get(isCreativeMode ? "msg.mode-creative" : "msg.mode-survival"), 3));
