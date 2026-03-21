@@ -269,7 +269,7 @@ namespace BlueprintMod
                         Vector2 relativeTile = new Vector2(x, y);
                         var itemAtTile = previewItems.FirstOrDefault(i => (int)i.TileX == x && (int)i.TileY == y);
                         bool hasPlantingPlan = plantingLookup[relativeTile].Any();
-                        if (Game1.currentLocation.Objects.TryGetValue(targetTile, out var worldObj) && !IsDebris(worldObj)) { hasCollision = true; break; }
+                        if (Game1.currentLocation.Objects.TryGetValue(targetTile, out var worldObj) && IsObjectPlacementBlocked(worldObj, itemAtTile, hasPlantingPlan)) { hasCollision = true; break; }
                         if (Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature))
                         {
                             if (IsTerrainFeatureBlocked(feature, itemAtTile, hasPlantingPlan)) { hasCollision = true; break; }
@@ -310,7 +310,7 @@ namespace BlueprintMod
                             else
                             {
                                 previewItems = savedPreviewItems;
-                                PlaceGhosts(pendingTile.Value);
+                                PlaceGhosts(pendingTile.Value, trackUndo: true);
                                 previewItems = null;
                             }
                         }
@@ -325,7 +325,7 @@ namespace BlueprintMod
                 QueueAssistedPlantingPrompt(mouseTile);
             }
             else
-                PlaceGhosts(mouseTile);
+                PlaceGhosts(mouseTile, trackUndo: true);
 
             isPreviewMode = false; previewItems = null; Game1.playSound("purchase");
         }
@@ -355,8 +355,10 @@ namespace BlueprintMod
                         Vector2 targetTile = new Vector2(mouseTile.X + x, mouseTile.Y + y);
                         var itemsAtTile = itemLookup[relativeTile];
                         var plantingPlansAtTile = plantingLookup[relativeTile];
+                        var primaryItemAtTile = itemsAtTile.FirstOrDefault();
                         
                         bool tileBlockedByObject = Game1.currentLocation.Objects.TryGetValue(targetTile, out var worldObj) && !IsDebris(worldObj);
+                        bool itemPlacementBlockedByObject = Game1.currentLocation.Objects.TryGetValue(targetTile, out var blockingObj) && IsObjectPlacementBlocked(blockingObj, primaryItemAtTile, plantingPlansAtTile.Any());
                         
                         if (itemsAtTile.Any())
                         {
@@ -365,7 +367,7 @@ namespace BlueprintMod
                                 bool isBlocked = false;
                                 if (!isOverwriteMode)
                                 {
-                                    if (tileBlockedByObject) isBlocked = true;
+                                    if (itemPlacementBlockedByObject) isBlocked = true;
                                     else if (Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature))
                                     {
                                         isBlocked = IsTerrainFeatureBlocked(feature, item, plantingPlansAtTile.Any());
@@ -376,7 +378,7 @@ namespace BlueprintMod
                         }
                         else if (!isOverwriteMode)
                         {
-                            bool isBlocked = tileBlockedByObject;
+                            bool isBlocked = itemPlacementBlockedByObject;
                             if (!isBlocked && Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature))
                                 isBlocked = IsTerrainFeatureBlocked(feature, null, plantingPlansAtTile.Any());
                             if (isBlocked) DrawSelectionBox(e.SpriteBatch, targetTile, targetTile, Color.Red * 0.2f);
@@ -636,15 +638,30 @@ namespace BlueprintMod
             return action;
         }
 
-        private void PlaceGhosts(Vector2 origin)
+        private void PlaceGhosts(Vector2 origin, bool trackUndo = false)
         {
             if (previewItems == null) return;
+            var addedGhosts = new List<GhostItem>();
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
-                AddGhost(new GhostItem { Tile = targetTile, ItemId = item.ItemId, LocationName = Game1.currentLocation?.NameOrUniqueName });
+                GhostItem ghost = new GhostItem { Tile = targetTile, ItemId = item.ItemId, LocationName = Game1.currentLocation?.NameOrUniqueName };
+                if (AddGhost(ghost))
+                    addedGhosts.Add(ghost);
             }
-            AddPlantingGhosts(origin);
+
+            addedGhosts.AddRange(AddPlantingGhosts(origin));
+
+            if (trackUndo && addedGhosts.Count > 0)
+            {
+                PlacementAction action = new PlacementAction
+                {
+                    Location = Game1.currentLocation,
+                    AddedGhosts = addedGhosts
+                };
+                undoStack.Add(action);
+                if (undoStack.Count > Config.MaxUndoSteps) undoStack.RemoveAt(0);
+            }
         }
 
         private void HandleGhostFilling(Vector2 tile)
@@ -840,6 +857,19 @@ namespace BlueprintMod
                 return false;
 
             return !hasPlantingPlan;
+        }
+
+        private bool IsObjectPlacementBlocked(StardewValley.Object worldObj, BlueprintItem itemAtTile, bool hasPlantingPlan)
+        {
+            if (worldObj == null || IsDebris(worldObj))
+                return false;
+
+            // Planting-only tiles are validated separately by the assisted planting rules,
+            // so a placed object there shouldn't block the whole blueprint body in safe mode.
+            if (itemAtTile == null && hasPlantingPlan)
+                return false;
+
+            return true;
         }
 
         private bool IsPlantingPlanBlocked(Vector2 targetTile, PlantingPlan plan)
