@@ -129,12 +129,13 @@ namespace BlueprintMod
                 
                 var requirements = hoveredBlueprint.Items.GroupBy(i => i.ItemId).Select(g => new { ItemId = g.Key, Count = g.Count() }).ToList();
                 var plantingRequirements = (hoveredBlueprint.PlantingPlans ?? new List<PlantingPlan>())
-                    .GroupBy(plan => new { plan.SeedItemId, plan.Mode, plan.DisplayName })
+                    .GroupBy(plan => new { plan.SeedItemId, plan.Mode, plan.DisplayName, plan.Season })
                     .Select(g => new
                     {
                         g.Key.SeedItemId,
                         g.Key.Mode,
-                        DisplayName = string.IsNullOrWhiteSpace(g.Key.DisplayName) ? g.Key.SeedItemId : g.Key.DisplayName,
+                        g.Key.DisplayName,
+                        g.Key.Season,
                         Count = g.Count()
                     })
                     .ToList();
@@ -166,20 +167,44 @@ namespace BlueprintMod
                     b.DrawString(Game1.smallFont, helper.Translation.Get("msg.planting-list"), new Vector2(previewX + 30, yOffset), Color.ForestGreen);
                     yOffset += 35;
 
-                    foreach (var req in plantingRequirements.Take(8))
+                    // 显示种植位统计
+                    int groundCount = plantingRequirements.Where(p => p.Mode == PlantingMode.Ground).Sum(p => p.Count);
+                    int potCount = plantingRequirements.Where(p => p.Mode == PlantingMode.IndoorPot).Sum(p => p.Count);
+                    
+                    if (groundCount > 0)
+                        b.DrawString(Game1.smallFont, $"{groundCount} " + helper.Translation.Get("msg.planting-mode-ground"), new Vector2(previewX + 30, yOffset), Color.DarkGreen);
+                    yOffset += 25;
+                    
+                    if (potCount > 0)
+                        b.DrawString(Game1.smallFont, $"{potCount} " + helper.Translation.Get("msg.planting-mode-pot"), new Vector2(previewX + 30, yOffset), Color.DarkGreen);
+                    yOffset += 25;
+
+                    // 检查季节兼容性
+                    string currentSeason = Game1.currentSeason;
+                    bool hasSeasonMismatch = plantingRequirements.Any(req => 
+                        !string.IsNullOrEmpty(req.Season) && req.Season != currentSeason);
+                    
+                    if (hasSeasonMismatch)
+                    {
+                        b.DrawString(Game1.smallFont, helper.Translation.Get("msg.planting-season-warning"), new Vector2(previewX + 30, yOffset), Color.Orange);
+                        yOffset += 25;
+                    }
+
+                    // 显示种子需求详情
+                    foreach (var req in plantingRequirements.Take(6))
                     {
                         ParsedItemData itemData = ItemRegistry.GetData(req.SeedItemId);
                         int hasCount = getTotalItemCount(req.SeedItemId);
                         if (itemData != null)
-                            b.Draw(itemData.GetTexture(), new Rectangle(previewX + 30, yOffset, 32, 32), itemData.GetSourceRect(), Color.White);
+                            b.Draw(itemData.GetTexture(), new Rectangle(previewX + 30, yOffset, 24, 24), itemData.GetSourceRect(), Color.White);
 
-                        string modeText = helper.Translation.Get(req.Mode == PlantingMode.IndoorPot ? "msg.planting-mode-pot" : "msg.planting-mode-ground");
+                        string modeText = helper.Translation.Get(req.Mode == PlantingMode.IndoorPot ? "msg.planting-mode-pot-short" : "msg.planting-mode-ground-short");
                         string statusText = $"{req.DisplayName} {hasCount}/{req.Count} [{modeText}]";
-                        b.DrawString(Game1.smallFont, statusText, new Vector2(previewX + 70, yOffset + 4), hasCount >= req.Count ? Color.Green : Color.Red);
-                        yOffset += 35;
+                        b.DrawString(Game1.smallFont, statusText, new Vector2(previewX + 60, yOffset + 2), hasCount >= req.Count ? Color.Green : Color.Red);
+                        yOffset += 30;
                     }
 
-                    if (plantingRequirements.Count > 8)
+                    if (plantingRequirements.Count > 6)
                         b.DrawString(Game1.smallFont, "...", new Vector2(previewX + 30, yOffset), Color.Gray);
                 }
             }
