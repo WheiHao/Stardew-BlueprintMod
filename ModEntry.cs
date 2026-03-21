@@ -322,7 +322,9 @@ namespace BlueprintMod
             if (isCreativeMode)
             {
                 PlaceBlueprintReal(mouseTile);
-                QueueAssistedPlantingPrompt(mouseTile);
+                int plantedCount = DirectPlantCrops(mouseTile);
+                if (plantedCount > 0)
+                    Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.assisted-planting-success", new { count = plantedCount }), 2));
             }
             else
                 PlaceGhosts(mouseTile, trackUndo: true);
@@ -1295,6 +1297,34 @@ namespace BlueprintMod
                 Monitor.Log(ex.ToString(), LogLevel.Error);
                 Game1.showRedMessage(Helper.Translation.Get("msg.assisted-planting-run-error"));
                 return false;
+            }
+        }
+
+        private int DirectPlantCrops(Vector2 origin)
+        {
+            if (currentPlantingPlans == null || currentPlantingPlans.Count == 0)
+                return 0;
+
+            try
+            {
+                List<PlantingTarget> targets = GetPlantingTargets(origin);
+                int plantedCount = 0;
+
+                foreach (PlantingTarget target in targets)
+                {
+                    if (TryPlantTarget(target))
+                    {
+                        plantedCount++;
+                    }
+                }
+
+                return plantedCount;
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log("Failed to execute direct planting in creative mode.", LogLevel.Error);
+                Monitor.Log(ex.ToString(), LogLevel.Error);
+                return 0;
             }
         }
 
