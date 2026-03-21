@@ -29,6 +29,7 @@ namespace BlueprintMod
         private bool isCreativeMode = false;
         private bool isOverwriteMode = true;
         private List<PlantingPlan> currentPlantingPlans = new List<PlantingPlan>();
+        private Vector2? pendingPlantingPromptOrigin = null;
 
         private Vector2? pendingTile = null;
 
@@ -94,6 +95,12 @@ namespace BlueprintMod
                     () => Helper.Translation.Get("config.clear-ghosts-key"),
                     () => Helper.Translation.Get("config.clear-ghosts-key.tooltip"));
 
+                configMenu.AddKeybindList(ModManifest,
+                    () => Config.AssistPlantingKey,
+                    val => Config.AssistPlantingKey = val,
+                    () => Helper.Translation.Get("config.assist-planting-key"),
+                    () => Helper.Translation.Get("config.assist-planting-key.tooltip"));
+
                 configMenu.AddBoolOption(ModManifest,
                     () => Config.DefaultOverwriteMode,
                     val => Config.DefaultOverwriteMode = val,
@@ -103,8 +110,18 @@ namespace BlueprintMod
 
         private void OnUpdateTicked(object sender, UpdateTickedEventArgs e)
         {
-            if (!e.IsMultipleOf(20) || placedGhosts.Count == 0 || Game1.currentLocation == null) return;
-            placedGhosts.RemoveAll(ghost => IsGhostInCurrentLocation(ghost) && IsGhostSatisfied(ghost));
+            if (Game1.currentLocation == null)
+                return;
+
+            if (e.IsMultipleOf(20) && placedGhosts.Count > 0)
+                placedGhosts.RemoveAll(ghost => IsGhostInCurrentLocation(ghost) && IsGhostSatisfied(ghost));
+
+            if (pendingPlantingPromptOrigin.HasValue && Game1.activeClickableMenu == null && Context.IsPlayerFree)
+            {
+                Vector2 origin = pendingPlantingPromptOrigin.Value;
+                pendingPlantingPromptOrigin = null;
+                TryOpenAssistedPlantingPrompt(origin);
+            }
         }
 
         private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
@@ -161,6 +178,10 @@ namespace BlueprintMod
             {
                 placedGhosts.Clear();
                 Game1.playSound("trashcan");
+            }
+            else if (Config.AssistPlantingKey.JustPressed())
+            {
+                TriggerAssistedPlantingForCurrentLocation();
             }
             else if (Config.OpenBlueprintBrowser.JustPressed())
             {
@@ -282,7 +303,7 @@ namespace BlueprintMod
                                 foreach (var req in savedRequirements) ConsumeItems(req.ItemId, req.Count);
                                 previewItems = savedPreviewItems;
                                 PlaceBlueprintReal(pendingTile.Value, savedRequirements);
-                                ShowPlantingPlanHint();
+                                QueueAssistedPlantingPrompt(pendingTile.Value);
                                 previewItems = null;
                                 Game1.playSound("purchase");
                             }
@@ -301,7 +322,7 @@ namespace BlueprintMod
             if (isCreativeMode)
             {
                 PlaceBlueprintReal(mouseTile);
-                ShowPlantingPlanHint();
+                QueueAssistedPlantingPrompt(mouseTile);
             }
             else
                 PlaceGhosts(mouseTile);
@@ -411,6 +432,13 @@ namespace BlueprintMod
                     string modeText = Helper.Translation.Get(hoveredPlantingGhost.PlantingMode == PlantingMode.IndoorPot ? "msg.planting-mode-pot" : "msg.planting-mode-ground");
                     string hoverText = $"{hoveredPlantingGhost.DisplayName} [{modeText}]";
                     e.SpriteBatch.DrawString(Game1.smallFont, hoverText, new Vector2(80, 80), Color.Wheat);
+                }
+
+                int plantingGhostCount = GetPendingPlantingGhostsForCurrentLocation().Count;
+                if (plantingGhostCount > 0)
+                {
+                    string readyText = Helper.Translation.Get("msg.assisted-planting-ready", new { key = Config.AssistPlantingKey.ToString() });
+                    e.SpriteBatch.DrawString(Game1.smallFont, readyText, new Vector2(80, 105), Color.LightGreen);
                 }
             }
         }
@@ -560,12 +588,15 @@ namespace BlueprintMod
             }
         }
 
-        private void PlaceBlueprintReal(Vector2 origin, List<ItemRequirement> refunds = null)
+        private PlacementAction PlaceBlueprintReal(Vector2 origin, List<ItemRequirement> refunds = null)
         {
-            if (previewItems == null) return;
+            if (previewItems == null) return null;
 
             PlacementAction action = new PlacementAction { Location = Game1.currentLocation, RefundItems = refunds ?? new List<ItemRequirement>() };
-            var affectedTiles = previewItems.Select(i => new Vector2(origin.X + i.TileX, origin.Y + i.TileY)).Distinct();
+            var affectedTiles = previewItems
+                .Select(i => new Vector2(origin.X + i.TileX, origin.Y + i.TileY))
+                .Concat((currentPlantingPlans ?? new List<PlantingPlan>()).Select(plan => new Vector2(origin.X + plan.TileX, origin.Y + plan.TileY)))
+                .Distinct();
             foreach (var tile in affectedTiles)
             {
                 var change = new TileChange { Tile = tile };
@@ -602,6 +633,7 @@ namespace BlueprintMod
             undoStack.Add(action);
             if (undoStack.Count > Config.MaxUndoSteps) undoStack.RemoveAt(0);
             action.AddedGhosts.AddRange(AddPlantingGhosts(origin));
+            return action;
         }
 
         private void PlaceGhosts(Vector2 origin)
@@ -784,6 +816,17 @@ namespace BlueprintMod
                 ghost.Tile == new Vector2((int)cursorTile.X, (int)cursorTile.Y));
         }
 
+        private List<GhostItem> GetPendingPlantingGhostsForCurrentLocation()
+        {
+            return placedGhosts
+                .Where(ghost => ghost.IsPlantingHint && IsGhostInCurrentLocation(ghost))
+                .GroupBy(ghost => new { ghost.Tile, ghost.ItemId, ghost.PlantingMode, ghost.DisplayName, ghost.LocationName })
+                .Select(group => group.First())
+                .OrderBy(ghost => ghost.Tile.Y)
+                .ThenBy(ghost => ghost.Tile.X)
+                .ToList();
+        }
+
         private bool IsTerrainFeatureBlocked(StardewValley.TerrainFeatures.TerrainFeature feature, BlueprintItem itemAtTile, bool hasPlantingPlan)
         {
             if (feature == null)
@@ -947,7 +990,7 @@ namespace BlueprintMod
             }
         }
 
-        private void ShowPlantingPlanHint()
+        private void QueueAssistedPlantingPrompt(Vector2 origin)
         {
             if (currentPlantingPlans == null || currentPlantingPlans.Count == 0)
                 return;
@@ -955,6 +998,345 @@ namespace BlueprintMod
             int groundCount = currentPlantingPlans.Count(plan => plan.Mode == PlantingMode.Ground);
             int potCount = currentPlantingPlans.Count(plan => plan.Mode == PlantingMode.IndoorPot);
             Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.planting-summary", new { total = currentPlantingPlans.Count, ground = groundCount, pot = potCount }), 2));
+            pendingPlantingPromptOrigin = origin;
+        }
+
+        private void TryOpenAssistedPlantingPrompt(Vector2 origin)
+        {
+            try
+            {
+                PromptForAssistedPlanting(origin);
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"Failed to open assisted planting prompt at {origin}.", LogLevel.Error);
+                Monitor.Log(ex.ToString(), LogLevel.Error);
+                Game1.showRedMessage(Helper.Translation.Get("msg.assisted-planting-open-error"));
+            }
+        }
+
+        private void PromptForAssistedPlanting(Vector2 origin)
+        {
+            if (currentPlantingPlans == null || currentPlantingPlans.Count == 0)
+                return;
+
+            List<PlantingTarget> targets = GetPlantingTargets(origin);
+            List<PlantingValidationIssue> issues = ValidatePlantingTargets(targets);
+            if (issues.Count > 0)
+            {
+                ShowPlantingIssues(issues);
+                return;
+            }
+
+            Game1.currentLocation.createQuestionDialogue(
+                Helper.Translation.Get("msg.confirm-assisted-planting", new { count = targets.Count }),
+                Game1.currentLocation.createYesNoResponses(),
+                (who, answer) =>
+                {
+                    if (answer == "Yes")
+                    {
+                        bool planted = TryAssistPlanting(targets);
+                        if (planted)
+                            Game1.playSound("dirtyHit");
+                    }
+                }
+            );
+        }
+
+        private void TriggerAssistedPlantingForCurrentLocation()
+        {
+            List<GhostItem> ghosts = GetPendingPlantingGhostsForCurrentLocation();
+            if (ghosts.Count == 0)
+            {
+                Game1.showRedMessage(Helper.Translation.Get("msg.assisted-planting-no-targets"));
+                return;
+            }
+
+            TryOpenAssistedPlantingPrompt(ghosts.Select(CreatePlantingTarget).ToList(), useConfirmationDialog: false);
+        }
+
+        private void TryOpenAssistedPlantingPrompt(List<PlantingTarget> targets, bool useConfirmationDialog)
+        {
+            try
+            {
+                if (targets == null || targets.Count == 0)
+                {
+                    Game1.showRedMessage(Helper.Translation.Get("msg.assisted-planting-no-targets"));
+                    return;
+                }
+
+                List<PlantingValidationIssue> issues = ValidatePlantingTargets(targets);
+                if (issues.Count > 0)
+                {
+                    ShowPlantingIssues(issues);
+                    return;
+                }
+
+                if (!useConfirmationDialog)
+                {
+                    if (TryAssistPlanting(targets))
+                        Game1.playSound("dirtyHit");
+                    return;
+                }
+
+                Game1.currentLocation.createQuestionDialogue(
+                    Helper.Translation.Get("msg.confirm-assisted-planting", new { count = targets.Count }),
+                    Game1.currentLocation.createYesNoResponses(),
+                    (who, answer) =>
+                    {
+                        if (answer == "Yes" && TryAssistPlanting(targets))
+                            Game1.playSound("dirtyHit");
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log("Failed to open assisted planting prompt.", LogLevel.Error);
+                Monitor.Log(ex.ToString(), LogLevel.Error);
+                Game1.showRedMessage(Helper.Translation.Get("msg.assisted-planting-open-error"));
+            }
+        }
+
+        private List<PlantingTarget> GetPlantingTargets(Vector2 origin)
+        {
+            return currentPlantingPlans
+                .Select(plan => new PlantingTarget
+                {
+                    Tile = new Vector2(origin.X + plan.TileX, origin.Y + plan.TileY),
+                    SeedItemId = plan.SeedItemId,
+                    Mode = plan.Mode,
+                    DisplayName = GetSeedDisplayName(plan.SeedItemId, plan.DisplayName)
+                })
+                .ToList();
+        }
+
+        private PlantingTarget CreatePlantingTarget(GhostItem ghost)
+        {
+            return new PlantingTarget
+            {
+                Tile = ghost.Tile,
+                SeedItemId = ghost.ItemId,
+                Mode = ghost.PlantingMode,
+                DisplayName = GetSeedDisplayName(ghost.ItemId, ghost.DisplayName)
+            };
+        }
+
+        private List<PlantingValidationIssue> ValidatePlantingTargets(List<PlantingTarget> targets)
+        {
+            var issues = new List<PlantingValidationIssue>();
+            var missingSeedCounts = new Dictionary<string, SeedShortage>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (PlantingTarget target in targets)
+            {
+                PlantingValidationIssue issue = ValidatePlantingTarget(target);
+                if (issue != null)
+                {
+                    issues.Add(issue);
+                    continue;
+                }
+
+                if (!missingSeedCounts.TryGetValue(target.SeedItemId, out var shortage))
+                {
+                    shortage = new SeedShortage
+                    {
+                        SeedItemId = target.SeedItemId,
+                        DisplayName = target.DisplayName
+                    };
+                    missingSeedCounts[target.SeedItemId] = shortage;
+                }
+
+                shortage.RequiredCount++;
+            }
+
+            foreach (SeedShortage shortage in missingSeedCounts.Values.OrderBy(entry => entry.DisplayName))
+            {
+                int available = GetTotalItemCount(shortage.SeedItemId);
+                if (available < shortage.RequiredCount)
+                {
+                    issues.Add(new PlantingValidationIssue
+                    {
+                        Tile = null,
+                        SeedItemId = shortage.SeedItemId,
+                        Reason = Helper.Translation.Get("msg.planting-fail-missing-seeds", new
+                        {
+                            name = shortage.DisplayName,
+                            required = shortage.RequiredCount,
+                            available
+                        })
+                    });
+                }
+            }
+
+            return issues;
+        }
+
+        private PlantingValidationIssue ValidatePlantingTarget(PlantingTarget target)
+        {
+            if (target == null)
+                return null;
+
+            string deniedMessage;
+            Vector2 targetTile = target.Tile;
+            bool canPlantHere = Game1.currentLocation.CanPlantSeedsHere(target.SeedItemId, (int)targetTile.X, (int)targetTile.Y, target.Mode == PlantingMode.IndoorPot, out deniedMessage);
+            string tileText = FormatTile(targetTile);
+
+            if (target.Mode == PlantingMode.Ground)
+            {
+                if (!Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var terrainFeature) || terrainFeature is not StardewValley.TerrainFeatures.HoeDirt dirt)
+                {
+                    return CreatePlantingIssue(target, Helper.Translation.Get("msg.planting-fail-ground-tile", new { tile = tileText }));
+                }
+
+                object plantedCrop = UnwrapNetValue(GetMemberValue(dirt, "crop"));
+                if (plantedCrop != null)
+                    return CreatePlantingIssue(target, Helper.Translation.Get("msg.planting-fail-occupied-ground", new { tile = tileText }));
+            }
+            else
+            {
+                if (!Game1.currentLocation.Objects.TryGetValue(targetTile, out var obj))
+                    return CreatePlantingIssue(target, Helper.Translation.Get("msg.planting-fail-missing-pot", new { tile = tileText }));
+
+                if (obj.GetType().FullName != "StardewValley.Objects.IndoorPot")
+                    return CreatePlantingIssue(target, Helper.Translation.Get("msg.planting-fail-not-pot", new { tile = tileText }));
+
+                object hoeDirtRef = GetMemberValue(obj, "hoeDirt");
+                object hoeDirt = UnwrapNetValue(hoeDirtRef);
+                object crop = hoeDirt != null ? UnwrapNetValue(GetMemberValue(hoeDirt, "crop")) : null;
+                if (crop != null)
+                    return CreatePlantingIssue(target, Helper.Translation.Get("msg.planting-fail-occupied-pot", new { tile = tileText }));
+
+                Item seedItem = ItemRegistry.Create(target.SeedItemId);
+                if (seedItem == null || obj.GetType().GetMethod("IsPlantableItem")?.Invoke(obj, new object[] { seedItem }) is bool canPlantInPot && !canPlantInPot)
+                    return CreatePlantingIssue(target, Helper.Translation.Get("msg.planting-fail-invalid-pot-crop", new { tile = tileText }));
+            }
+
+            if (!canPlantHere)
+            {
+                string reason = !string.IsNullOrWhiteSpace(deniedMessage)
+                    ? deniedMessage
+                    : Helper.Translation.Get("msg.planting-fail-season-location", new { tile = tileText });
+                return CreatePlantingIssue(target, $"{tileText}: {reason}");
+            }
+
+            return null;
+        }
+
+        private PlantingValidationIssue CreatePlantingIssue(PlantingTarget target, string reason)
+        {
+            return new PlantingValidationIssue
+            {
+                Tile = target?.Tile,
+                SeedItemId = target?.SeedItemId,
+                PlantingMode = target?.Mode,
+                Reason = reason
+            };
+        }
+
+        private bool TryAssistPlanting(List<PlantingTarget> targets)
+        {
+            try
+            {
+                List<PlantingValidationIssue> issues = ValidatePlantingTargets(targets);
+                if (issues.Count > 0)
+                {
+                    ShowPlantingIssues(issues);
+                    return false;
+                }
+
+                int plantedCount = 0;
+                foreach (PlantingTarget target in targets)
+                {
+                    if (TryPlantTarget(target))
+                    {
+                        ConsumeItems(target.SeedItemId, 1);
+                        plantedCount++;
+                    }
+                }
+
+                if (plantedCount > 0)
+                    Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.assisted-planting-success", new { count = plantedCount }), 2));
+
+                return plantedCount == currentPlantingPlans.Count;
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log("Failed to execute assisted planting.", LogLevel.Error);
+                Monitor.Log(ex.ToString(), LogLevel.Error);
+                Game1.showRedMessage(Helper.Translation.Get("msg.assisted-planting-run-error"));
+                return false;
+            }
+        }
+
+        private bool TryPlantTarget(PlantingTarget target)
+        {
+            if (target == null)
+                return false;
+
+            Item seedItem = ItemRegistry.Create(target.SeedItemId);
+            if (seedItem == null)
+                return false;
+
+            Vector2 targetTile = target.Tile;
+
+            if (target.Mode == PlantingMode.IndoorPot)
+            {
+                if (!Game1.currentLocation.Objects.TryGetValue(targetTile, out var obj))
+                    return false;
+
+                MethodInfo method = obj.GetType().GetMethod("performObjectDropInAction", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (method == null)
+                    return false;
+
+                object result = method.Invoke(obj, new object[] { seedItem, false, Game1.player, false });
+                return result is bool planted && planted;
+            }
+
+            if (!Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var terrainFeature) || terrainFeature is not StardewValley.TerrainFeatures.HoeDirt dirt)
+                return false;
+
+            object plantedCrop = UnwrapNetValue(GetMemberValue(dirt, "crop"));
+            if (plantedCrop != null)
+                return false;
+
+            StardewValley.Crop crop = CreateCropInstance(target.SeedItemId, targetTile, Game1.currentLocation);
+            if (crop == null)
+                return false;
+
+            return TrySetMemberValue(dirt, "crop", crop);
+        }
+
+        private void ShowPlantingIssues(List<PlantingValidationIssue> issues)
+        {
+            if (issues == null || issues.Count == 0)
+                return;
+
+            const int maxLines = 6;
+            List<string> lines = new List<string>
+            {
+                Helper.Translation.Get("msg.assisted-planting-failed-header")
+            };
+
+            foreach (string reason in issues.Select(issue => issue.Reason).Distinct().Take(maxLines))
+                lines.Add($"- {reason}");
+
+            if (issues.Select(issue => issue.Reason).Distinct().Count() > maxLines)
+                lines.Add(Helper.Translation.Get("msg.assisted-planting-failed-more"));
+
+            Game1.drawObjectDialogue(string.Join(Environment.NewLine, lines));
+        }
+
+        private string GetSeedDisplayName(string seedItemId, string fallbackName)
+        {
+            ParsedItemData seedData = ItemRegistry.GetData(seedItemId);
+            if (seedData != null)
+                return seedData.DisplayName;
+
+            return string.IsNullOrWhiteSpace(fallbackName) ? seedItemId : fallbackName;
+        }
+
+        private string FormatTile(Vector2 tile)
+        {
+            return $"({(int)tile.X}, {(int)tile.Y})";
         }
 
         private PlantingPlan TryCreateGroundPlantingPlan(StardewValley.TerrainFeatures.HoeDirt dirt, int tileX, int tileY)
@@ -1058,6 +1440,67 @@ namespace BlueprintMod
             return field?.GetValue(instance);
         }
 
+        private bool TrySetMemberValue(object instance, string memberName, object value)
+        {
+            if (instance == null)
+                return false;
+
+            Type type = instance.GetType();
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            PropertyInfo property = type.GetProperty(memberName, flags);
+            if (property != null)
+            {
+                if (property.CanWrite && property.PropertyType.IsInstanceOfType(value))
+                {
+                    property.SetValue(instance, value);
+                    return true;
+                }
+
+                object wrappedValue = property.GetValue(instance);
+                if (TrySetWrappedValue(wrappedValue, value))
+                    return true;
+            }
+
+            FieldInfo field = type.GetField(memberName, flags);
+            if (field != null)
+            {
+                if (field.FieldType.IsInstanceOfType(value))
+                {
+                    field.SetValue(instance, value);
+                    return true;
+                }
+
+                object wrappedValue = field.GetValue(instance);
+                if (TrySetWrappedValue(wrappedValue, value))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private bool TrySetWrappedValue(object wrappedValue, object value)
+        {
+            if (wrappedValue == null)
+                return false;
+
+            PropertyInfo valueProperty = wrappedValue.GetType().GetProperty("Value", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (valueProperty == null || !valueProperty.CanWrite)
+                return false;
+
+            valueProperty.SetValue(wrappedValue, value);
+            return true;
+        }
+
+        private StardewValley.Crop CreateCropInstance(string seedItemId, Vector2 targetTile, GameLocation location)
+        {
+            string unqualifiedSeedId = seedItemId?.StartsWith("(O)") == true ? seedItemId.Substring(3) : seedItemId;
+            if (string.IsNullOrWhiteSpace(unqualifiedSeedId))
+                return null;
+
+            return new StardewValley.Crop(unqualifiedSeedId, (int)targetTile.X, (int)targetTile.Y, location);
+        }
+
         private object UnwrapNetValue(object value)
         {
             if (value == null)
@@ -1132,6 +1575,29 @@ namespace BlueprintMod
         public List<TileChange> Changes { get; set; } = new List<TileChange>();
         public List<ItemRequirement> RefundItems { get; set; } = new List<ItemRequirement>();
         public List<GhostItem> AddedGhosts { get; set; } = new List<GhostItem>();
+    }
+
+    public class PlantingValidationIssue
+    {
+        public Vector2? Tile { get; set; }
+        public string SeedItemId { get; set; }
+        public PlantingMode? PlantingMode { get; set; }
+        public string Reason { get; set; }
+    }
+
+    public class PlantingTarget
+    {
+        public Vector2 Tile { get; set; }
+        public string SeedItemId { get; set; }
+        public PlantingMode Mode { get; set; }
+        public string DisplayName { get; set; }
+    }
+
+    public class SeedShortage
+    {
+        public string SeedItemId { get; set; }
+        public string DisplayName { get; set; }
+        public int RequiredCount { get; set; }
     }
 
     // Local definition for IGenericModConfigMenuApi to allow compilation.

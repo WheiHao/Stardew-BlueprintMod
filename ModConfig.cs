@@ -11,6 +11,7 @@ namespace BlueprintMod
         public KeybindList OpenBlueprintBrowser { get; set; } = KeybindList.Parse("LeftControl + L");
         public KeybindList UndoKey { get; set; } = KeybindList.Parse("LeftControl + Z");
         public KeybindList ClearGhosts { get; set; } = KeybindList.Parse("LeftControl + C");
+        public KeybindList AssistPlantingKey { get; set; } = KeybindList.Parse("LeftControl + P");
 
         // === 鼠标操作（不建议改 KeybindList）===
         public SButton SelectStartTile { get; set; } = SButton.MouseLeft;
