@@ -1310,6 +1310,9 @@ namespace BlueprintMod
                 List<PlantingTarget> targets = GetPlantingTargets(origin);
                 int plantedCount = 0;
 
+                // 在创造模式下，先准备耕地
+                PrepareGroundForPlanting(targets);
+
                 foreach (PlantingTarget target in targets)
                 {
                     if (TryPlantTarget(target))
@@ -1325,6 +1328,30 @@ namespace BlueprintMod
                 Monitor.Log("Failed to execute direct planting in creative mode.", LogLevel.Error);
                 Monitor.Log(ex.ToString(), LogLevel.Error);
                 return 0;
+            }
+        }
+
+        private void PrepareGroundForPlanting(List<PlantingTarget> targets)
+        {
+            foreach (PlantingTarget target in targets)
+            {
+                if (target.Mode == PlantingMode.Ground)
+                {
+                    Vector2 tile = target.Tile;
+
+                    // 检查是否已经有耕地
+                    if (!Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var terrainFeature) ||
+                        !(terrainFeature is StardewValley.TerrainFeatures.HoeDirt))
+                    {
+                        // 移除任何现有的地形特征
+                        if (Game1.currentLocation.terrainFeatures.ContainsKey(tile))
+                            Game1.currentLocation.terrainFeatures.Remove(tile);
+
+                        // 创建新的耕地（已浇水状态）
+                        var hoeDirt = new StardewValley.TerrainFeatures.HoeDirt(1, Game1.currentLocation);
+                        Game1.currentLocation.terrainFeatures.Add(tile, hoeDirt);
+                    }
+                }
             }
         }
 
