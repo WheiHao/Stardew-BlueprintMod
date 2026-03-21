@@ -105,6 +105,12 @@ namespace BlueprintMod
                     () => Config.DefaultOverwriteMode,
                     val => Config.DefaultOverwriteMode = val,
                     () => "默认开启覆盖模式");
+
+                configMenu.AddTextOption(ModManifest,
+                    () => Config.ExportPath,
+                    val => Config.ExportPath = val ?? "",
+                    () => Helper.Translation.Get("config.export-path"),
+                    () => Helper.Translation.Get("config.export-path.tooltip"));
             }
         }
 
@@ -1001,7 +1007,46 @@ namespace BlueprintMod
                 currentBlueprintIndex = blueprintFiles.IndexOf(selectedFile);
                 LoadCurrentBlueprint();
                 isPreviewMode = true;
-            }, Helper, GetTotalItemCount);
+            }, (selectedFile) => ExportBlueprintFile(selectedFile), Helper, GetTotalItemCount);
+        }
+
+        public void SetExportPath(string path)
+        {
+            if (!string.IsNullOrWhiteSpace(path))
+                Config.ExportPath = path;
+            else
+                Config.ExportPath = "";
+
+            this.Helper.WriteConfig(Config);
+            Game1.addHUDMessage(new HUDMessage($"导出路径已设置为 {Config.ExportPath}", 3));
+        }
+
+        private void ExportBlueprintFile(FileInfo file)
+        {
+            if (file == null)
+                return;
+
+            try
+            {
+                string exportPath = Config.ExportPath;
+                if (string.IsNullOrWhiteSpace(exportPath))
+                {
+                    exportPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "BlueprintModExports");
+                }
+
+                if (!Directory.Exists(exportPath))
+                    Directory.CreateDirectory(exportPath);
+
+                string destPath = Path.Combine(exportPath, file.Name);
+                File.Copy(file.FullName, destPath, true);
+
+                Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.export-success"), 3));
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log("导出蓝图失败：" + ex.Message, LogLevel.Error);
+                Game1.showRedMessage("导出失败，请检查日志");
+            }
         }
 
         private void SwitchBlueprint(bool next) { if (blueprintFiles.Count > 1) { currentBlueprintIndex = next ? (currentBlueprintIndex + 1) % blueprintFiles.Count : (currentBlueprintIndex - 1 + blueprintFiles.Count) % blueprintFiles.Count; LoadCurrentBlueprint(); Game1.playSound("shwip"); } }

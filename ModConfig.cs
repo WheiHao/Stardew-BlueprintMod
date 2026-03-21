@@ -26,6 +26,8 @@ namespace BlueprintMod
         public bool DefaultCreativeMode { get; set; } = false;
         public int MaxUndoSteps { get; set; } = 10;
 
+        public string ExportPath { get; set; } = "";
+
         public string ChestRangeMode { get; set; } = "Global";
         public int ChestSearchRange { get; set; } = 10;
     }

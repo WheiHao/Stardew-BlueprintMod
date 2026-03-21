@@ -17,6 +17,7 @@ namespace BlueprintMod
         private List<FileInfo> blueprintFiles;
         private List<ClickableComponent> blueprintButtons = new List<ClickableComponent>();
         private Action<FileInfo> onBlueprintSelected;
+        private Action<FileInfo> onBlueprintExport;
         private IModHelper helper;
         private Func<string, int> getTotalItemCount;
         
@@ -24,22 +25,33 @@ namespace BlueprintMod
         private int currentPage = 0;
         private ClickableTextureComponent upArrow;
         private ClickableTextureComponent downArrow;
+        private ClickableComponent exportButton;
+        private ClickableComponent confirmButton;
+        private ClickableComponent cancelButton;
+
+        private bool isExportMode = false;
 
         private Dictionary<string, BlueprintFile> blueprintCache = new Dictionary<string, BlueprintFile>();
         private BlueprintFile hoveredBlueprint = null;
         private string hoveredBlueprintName = "";
+        private int hoveredBlueprintIndex = -1;
+        private int selectedBlueprintIndex = -1;
 
-        public BlueprintBrowserMenu(List<FileInfo> files, Action<FileInfo> onSelected, IModHelper helper, Func<string, int> getTotalItemCount)
+        public BlueprintBrowserMenu(List<FileInfo> files, Action<FileInfo> onSelected, Action<FileInfo> onExport, IModHelper helper, Func<string, int> getTotalItemCount)
             : base(Game1.uiViewport.Width / 2 - 500, Game1.uiViewport.Height / 2 - 300, 1000, 600, true)
         {
             this.blueprintFiles = files;
             this.onBlueprintSelected = onSelected;
+            this.onBlueprintExport = onExport;
             this.helper = helper;
             this.getTotalItemCount = getTotalItemCount;
             
             this.upArrow = new ClickableTextureComponent(new Rectangle(this.xPositionOnScreen + 616, this.yPositionOnScreen + 16, 44, 48), Game1.mouseCursors, new Rectangle(421, 459, 11, 12), 4f);
             this.downArrow = new ClickableTextureComponent(new Rectangle(this.xPositionOnScreen + 616, this.yPositionOnScreen + this.height - 64, 44, 48), Game1.mouseCursors, new Rectangle(421, 472, 11, 12), 4f);
             
+            this.exportButton = new ClickableComponent(new Rectangle(this.xPositionOnScreen + 660, this.yPositionOnScreen + 20, 220, 36), "export");
+            this.confirmButton = new ClickableComponent(new Rectangle(this.xPositionOnScreen + 660, this.yPositionOnScreen + 64, 220, 36), "confirm");
+            this.cancelButton = new ClickableComponent(new Rectangle(this.xPositionOnScreen + 660, this.yPositionOnScreen + 108, 220, 36), "cancel");
             LayoutButtons();
         }
 
@@ -70,14 +82,55 @@ namespace BlueprintMod
                 LayoutButtons();
             }
 
+            if (exportButton.containsPoint(x, y))
+            {
+                isExportMode = true;
+                selectedBlueprintIndex = -1;
+                Game1.addHUDMessage(new HUDMessage("导出模式：请选择一个蓝图，然后点击确认或取消", 3));
+                Game1.playSound("shwip");
+                return;
+            }
+
+            if (isExportMode && confirmButton.containsPoint(x, y))
+            {
+                if (selectedBlueprintIndex >= 0 && selectedBlueprintIndex < blueprintFiles.Count && onBlueprintExport != null)
+                {
+                    onBlueprintExport(blueprintFiles[selectedBlueprintIndex]);
+                    Game1.addHUDMessage(new HUDMessage("蓝图已导出", 3));
+                }
+                else
+                {
+                    Game1.addHUDMessage(new HUDMessage("请先选择一个蓝图", 3));
+                }
+                isExportMode = false;
+                selectedBlueprintIndex = -1;
+                return;
+            }
+
+            if (isExportMode && cancelButton.containsPoint(x, y))
+            {
+                isExportMode = false;
+                selectedBlueprintIndex = -1;
+                Game1.addHUDMessage(new HUDMessage("已取消导出", 3));
+                return;
+            }
+
             foreach (var button in blueprintButtons)
             {
                 if (button.containsPoint(x, y))
                 {
                     int index = int.Parse(button.name);
-                    onBlueprintSelected?.Invoke(blueprintFiles[index]);
-                    Game1.playSound("select");
-                    exitThisMenu();
+                    selectedBlueprintIndex = index;
+                    if (isExportMode)
+                    {
+                        Game1.addHUDMessage(new HUDMessage($"已选择导出蓝图：{blueprintFiles[index].Name}", 3));
+                    }
+                    else
+                    {
+                        onBlueprintSelected?.Invoke(blueprintFiles[index]);
+                        Game1.playSound("select");
+                        exitThisMenu();
+                    }
                     break;
                 }
             }
@@ -111,24 +164,65 @@ namespace BlueprintMod
                 if (isHovered)
                 {
                     hoveredBlueprintName = fileName;
+                    hoveredBlueprintIndex = index;
                     if (!blueprintCache.TryGetValue(blueprintFiles[index].Name, out hoveredBlueprint))
                     {
                         hoveredBlueprint = helper.Data.ReadJsonFile<BlueprintFile>($"blueprints/{blueprintFiles[index].Name}");
                         if (hoveredBlueprint != null) blueprintCache[blueprintFiles[index].Name] = hoveredBlueprint;
                     }
                 }
+
+                if (selectedBlueprintIndex == index)
+                {
+                    IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(384, 396, 15, 15), button.bounds.X - 2, button.bounds.Y - 2, button.bounds.Width + 4, button.bounds.Height + 4, Color.Yellow * 0.7f, 4f, false);
+                }
             }
 
             // 绘制预览侧边栏 (右侧)
             int previewX = this.xPositionOnScreen + 660;
             Game1.drawDialogueBox(previewX, this.yPositionOnScreen, 340, this.height, false, true);
-            
-            if (hoveredBlueprint != null)
+
+            // 基础导出按钮（总是可见）
+            IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(384, 396, 15, 15), exportButton.bounds.X, exportButton.bounds.Y, exportButton.bounds.Width, exportButton.bounds.Height, exportButton.containsPoint(Game1.getMouseX(), Game1.getMouseY()) ? Color.LightGreen : Color.Wheat, 4f, false);
+            b.DrawString(Game1.smallFont, helper.Translation.Get("msg.export-blueprint"), new Vector2(exportButton.bounds.X + 10, exportButton.bounds.Y + 10), Color.Black);
+
+            if (isExportMode)
             {
-                b.DrawString(Game1.dialogueFont, hoveredBlueprintName, new Vector2(previewX + 30, this.yPositionOnScreen + 40), Color.DarkSlateGray, 0f, Vector2.Zero, 0.6f, SpriteEffects.None, 0f);
-                
-                var requirements = hoveredBlueprint.Items.GroupBy(i => i.ItemId).Select(g => new { ItemId = g.Key, Count = g.Count() }).ToList();
-                var plantingRequirements = (hoveredBlueprint.PlantingPlans ?? new List<PlantingPlan>())
+                IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(384, 396, 15, 15), confirmButton.bounds.X, confirmButton.bounds.Y, confirmButton.bounds.Width, confirmButton.bounds.Height, confirmButton.containsPoint(Game1.getMouseX(), Game1.getMouseY()) ? Color.LightGreen : Color.Wheat, 4f, false);
+                b.DrawString(Game1.smallFont, helper.Translation.Get("msg.export-confirm"), new Vector2(confirmButton.bounds.X + 10, confirmButton.bounds.Y + 10), Color.Black);
+
+                IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(384, 396, 15, 15), cancelButton.bounds.X, cancelButton.bounds.Y, cancelButton.bounds.Width, cancelButton.bounds.Height, cancelButton.containsPoint(Game1.getMouseX(), Game1.getMouseY()) ? Color.Salmon : Color.Wheat, 4f, false);
+                b.DrawString(Game1.smallFont, helper.Translation.Get("msg.export-cancel"), new Vector2(cancelButton.bounds.X + 10, cancelButton.bounds.Y + 10), Color.Black);
+            }
+
+            BlueprintFile activeBlueprint = null;
+            string activeBlueprintName = "";
+            if (isExportMode && selectedBlueprintIndex >= 0 && selectedBlueprintIndex < blueprintFiles.Count)
+            {
+                var selectedFile = blueprintFiles[selectedBlueprintIndex];
+                activeBlueprintName = selectedFile.Name.Replace(".json", "");
+                if (!blueprintCache.TryGetValue(selectedFile.Name, out activeBlueprint))
+                {
+                    activeBlueprint = helper.Data.ReadJsonFile<BlueprintFile>($"blueprints/{selectedFile.Name}");
+                    if (activeBlueprint != null) blueprintCache[selectedFile.Name] = activeBlueprint;
+                }
+            }
+            else if (hoveredBlueprint != null)
+            {
+                activeBlueprint = hoveredBlueprint;
+                activeBlueprintName = hoveredBlueprintName;
+            }
+
+            if (!string.IsNullOrEmpty(activeBlueprintName))
+            {
+                b.DrawString(Game1.dialogueFont, activeBlueprintName, new Vector2(previewX + 30, this.yPositionOnScreen + 40), Color.DarkSlateGray, 0f, Vector2.Zero, 0.6f, SpriteEffects.None, 0f);
+                hoveredBlueprint = activeBlueprint; // align with existing processing
+            }
+
+            if (activeBlueprint != null)
+            {
+                var requirements = activeBlueprint.Items.GroupBy(i => i.ItemId).Select(g => new { ItemId = g.Key, Count = g.Count() }).ToList();
+                var plantingRequirements = (activeBlueprint.PlantingPlans ?? new List<PlantingPlan>())
                     .GroupBy(plan => new { plan.SeedItemId, plan.Mode, plan.DisplayName, plan.Season })
                     .Select(g => new
                     {
@@ -140,7 +234,7 @@ namespace BlueprintMod
                     })
                     .ToList();
                 int yOffset = this.yPositionOnScreen + 100;
-                
+
                 b.DrawString(Game1.smallFont, helper.Translation.Get("msg.shopping-list"), new Vector2(previewX + 30, yOffset), Color.Blue);
                 yOffset += 40;
 
@@ -210,7 +304,7 @@ namespace BlueprintMod
             }
             else
             {
-                b.DrawString(Game1.smallFont, "Hover over a blueprint\nto see materials.", new Vector2(previewX + 40, this.yPositionOnScreen + 200), Color.Gray * 0.8f);
+                b.DrawString(Game1.smallFont, "Hover or select a blueprint to see materials.", new Vector2(previewX + 40, this.yPositionOnScreen + 200), Color.Gray * 0.8f);
             }
 
             if (currentPage > 0) upArrow.draw(b);
