@@ -1278,7 +1278,8 @@ namespace BlueprintMod
                 {
                     if (TryPlantTarget(target))
                     {
-                        ConsumeItems(target.SeedItemId, 1);
+                        if (!isCreativeMode)
+                            ConsumeItems(target.SeedItemId, 1);
                         plantedCount++;
                     }
                 }
@@ -1620,6 +1621,7 @@ namespace BlueprintMod
         public Vector2 Tile { get; set; }
         public string SeedItemId { get; set; }
         public PlantingMode Mode { get; set; }
+
         public string DisplayName { get; set; }
     }
 
