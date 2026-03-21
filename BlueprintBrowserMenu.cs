@@ -86,7 +86,7 @@ namespace BlueprintMod
             {
                 isExportMode = true;
                 selectedBlueprintIndex = -1;
-                Game1.addHUDMessage(new HUDMessage("导出模式：请选择一个蓝图，然后点击确认或取消", 3));
+                Game1.addHUDMessage(new HUDMessage("已进入导出模式：请选择一个蓝图，然后点击确认或取消", 3));
                 Game1.playSound("shwip");
                 return;
             }
@@ -96,12 +96,14 @@ namespace BlueprintMod
                 if (selectedBlueprintIndex >= 0 && selectedBlueprintIndex < blueprintFiles.Count && onBlueprintExport != null)
                 {
                     onBlueprintExport(blueprintFiles[selectedBlueprintIndex]);
-                    Game1.addHUDMessage(new HUDMessage("蓝图已导出", 3));
+                    Game1.addHUDMessage(new HUDMessage($"已导出蓝图：{blueprintFiles[selectedBlueprintIndex].Name}", 3));
                 }
                 else
                 {
-                    Game1.addHUDMessage(new HUDMessage("请先选择一个蓝图", 3));
+                    Game1.addHUDMessage(new HUDMessage("请先选择一个蓝图后再确认导出", 3));
+                    return;
                 }
+
                 isExportMode = false;
                 selectedBlueprintIndex = -1;
                 return;
@@ -111,7 +113,7 @@ namespace BlueprintMod
             {
                 isExportMode = false;
                 selectedBlueprintIndex = -1;
-                Game1.addHUDMessage(new HUDMessage("已取消导出", 3));
+                Game1.addHUDMessage(new HUDMessage("导出已取消", 3));
                 return;
             }
 
@@ -184,15 +186,27 @@ namespace BlueprintMod
 
             // 基础导出按钮（总是可见）
             IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(384, 396, 15, 15), exportButton.bounds.X, exportButton.bounds.Y, exportButton.bounds.Width, exportButton.bounds.Height, exportButton.containsPoint(Game1.getMouseX(), Game1.getMouseY()) ? Color.LightGreen : Color.Wheat, 4f, false);
-            b.DrawString(Game1.smallFont, helper.Translation.Get("msg.export-blueprint"), new Vector2(exportButton.bounds.X + 10, exportButton.bounds.Y + 10), Color.Black);
+            string exportText = helper.Translation.Get("msg.export-blueprint");
+            float exportScale = 0.6f;
+            Vector2 exportSize = Game1.smallFont.MeasureString(exportText) * exportScale;
+            Vector2 exportPos = new Vector2(exportButton.bounds.X + (exportButton.bounds.Width - exportSize.X) / 2, exportButton.bounds.Y + (exportButton.bounds.Height - exportSize.Y) / 2);
+            b.DrawString(Game1.smallFont, exportText, exportPos, Color.Black, 0f, Vector2.Zero, exportScale, SpriteEffects.None, 0f);
 
             if (isExportMode)
             {
                 IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(384, 396, 15, 15), confirmButton.bounds.X, confirmButton.bounds.Y, confirmButton.bounds.Width, confirmButton.bounds.Height, confirmButton.containsPoint(Game1.getMouseX(), Game1.getMouseY()) ? Color.LightGreen : Color.Wheat, 4f, false);
-                b.DrawString(Game1.smallFont, helper.Translation.Get("msg.export-confirm"), new Vector2(confirmButton.bounds.X + 10, confirmButton.bounds.Y + 10), Color.Black);
+                string confirmText = helper.Translation.Get("msg.export-confirm");
+                float confirmScale = 0.6f;
+                Vector2 confirmSize = Game1.smallFont.MeasureString(confirmText) * confirmScale;
+                Vector2 confirmPos = new Vector2(confirmButton.bounds.X + (confirmButton.bounds.Width - confirmSize.X) / 2, confirmButton.bounds.Y + (confirmButton.bounds.Height - confirmSize.Y) / 2);
+                b.DrawString(Game1.smallFont, confirmText, confirmPos, Color.Black, 0f, Vector2.Zero, confirmScale, SpriteEffects.None, 0f);
 
                 IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(384, 396, 15, 15), cancelButton.bounds.X, cancelButton.bounds.Y, cancelButton.bounds.Width, cancelButton.bounds.Height, cancelButton.containsPoint(Game1.getMouseX(), Game1.getMouseY()) ? Color.Salmon : Color.Wheat, 4f, false);
-                b.DrawString(Game1.smallFont, helper.Translation.Get("msg.export-cancel"), new Vector2(cancelButton.bounds.X + 10, cancelButton.bounds.Y + 10), Color.Black);
+                string cancelText = helper.Translation.Get("msg.export-cancel");
+                float cancelScale = 0.6f;
+                Vector2 cancelSize = Game1.smallFont.MeasureString(cancelText) * cancelScale;
+                Vector2 cancelPos = new Vector2(cancelButton.bounds.X + (cancelButton.bounds.Width - cancelSize.X) / 2, cancelButton.bounds.Y + (cancelButton.bounds.Height - cancelSize.Y) / 2);
+                b.DrawString(Game1.smallFont, cancelText, cancelPos, Color.Black, 0f, Vector2.Zero, cancelScale, SpriteEffects.None, 0f);
             }
 
             BlueprintFile activeBlueprint = null;
