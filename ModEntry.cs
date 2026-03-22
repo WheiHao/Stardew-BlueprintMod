@@ -187,6 +187,9 @@ namespace BlueprintMod
             }
             else if (Config.AssistPlantingKey.JustPressed())
             {
+                if (!CanCurrentPlayerModifyWorld())
+                    return;
+
                 TriggerAssistedPlantingForCurrentLocation();
             }
             else if (Config.OpenBlueprintBrowser.JustPressed())
@@ -195,6 +198,9 @@ namespace BlueprintMod
             }
             else if (Config.UndoKey.JustPressed())
             {
+                if (!CanCurrentPlayerModifyWorld())
+                    return;
+
                 UndoLastPlacement();
             }
             // Re-inserted missing logic for blueprint range selection
@@ -242,7 +248,12 @@ namespace BlueprintMod
                     Helper.Input.Suppress(e.Button);
 
                 if (e.Button == SButton.MouseLeft)
+                {
+                    if (!CanCurrentPlayerModifyWorld())
+                        return;
+
                     HandlePlacementAttempt();
+                }
                 else if (e.Button == SButton.MouseRight)
                 {
                     isPreviewMode = false;
@@ -255,8 +266,20 @@ namespace BlueprintMod
             else if (!isCreativeMode && e.Button == SButton.MouseLeft &&
                      !Helper.Input.IsDown(Config.ModModifier))
             {
+                if (!CanCurrentPlayerModifyWorld())
+                    return;
+
                 HandleGhostFilling(new Vector2((int)e.Cursor.Tile.X, (int)e.Cursor.Tile.Y));
             }
+        }
+
+        private bool CanCurrentPlayerModifyWorld()
+        {
+            if (Context.IsMainPlayer)
+                return true;
+
+            Game1.showRedMessage(Helper.Translation.Get("msg.host-only-action"));
+            return false;
         }
 
         private void HandlePlacementAttempt()
@@ -610,8 +633,8 @@ namespace BlueprintMod
             foreach (var tile in affectedTiles)
             {
                 var change = new TileChange { Tile = tile };
-                if (Game1.currentLocation.Objects.TryGetValue(tile, out var obj)) change.OldObject = obj;
-                if (Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var feature)) change.OldTerrainFeature = feature;
+                if (Game1.currentLocation.Objects.TryGetValue(tile, out var obj)) change.OldObject = CloneWorldObject(obj);
+                if (Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var feature)) change.OldTerrainFeature = CloneTerrainFeature(feature, tile);
                 action.Changes.Add(change);
             }
 
@@ -755,6 +778,7 @@ namespace BlueprintMod
                     IsPlantingHint = true,
                     PlantingMode = plan.Mode,
                     DisplayName = plan.DisplayName,
+                    Season = plan.Season,
                     LocationName = Game1.currentLocation?.NameOrUniqueName
                 };
 
@@ -940,6 +964,23 @@ namespace BlueprintMod
                     added.ItemId == ghost.ItemId &&
                     added.IsPlantingHint == ghost.IsPlantingHint &&
                     added.PlantingMode == ghost.PlantingMode));
+            }
+
+            if (action.RestoredGhosts.Count > 0)
+            {
+                foreach (GhostItem ghost in action.RestoredGhosts)
+                {
+                    AddGhost(new GhostItem
+                    {
+                        Tile = ghost.Tile,
+                        ItemId = ghost.ItemId,
+                        IsPlantingHint = ghost.IsPlantingHint,
+                        PlantingMode = ghost.PlantingMode,
+                        DisplayName = ghost.DisplayName,
+                        Season = ghost.Season,
+                        LocationName = ghost.LocationName
+                    });
+                }
             }
 
             foreach (var refund in action.RefundItems)
@@ -1182,7 +1223,8 @@ namespace BlueprintMod
                     Tile = new Vector2(origin.X + plan.TileX, origin.Y + plan.TileY),
                     SeedItemId = plan.SeedItemId,
                     Mode = plan.Mode,
-                    DisplayName = GetSeedDisplayName(plan.SeedItemId, plan.DisplayName)
+                    DisplayName = GetSeedDisplayName(plan.SeedItemId, plan.DisplayName),
+                    Season = plan.Season
                 })
                 .ToList();
         }
@@ -1194,7 +1236,8 @@ namespace BlueprintMod
                 Tile = ghost.Tile,
                 SeedItemId = ghost.ItemId,
                 Mode = ghost.PlantingMode,
-                DisplayName = GetSeedDisplayName(ghost.ItemId, ghost.DisplayName)
+                DisplayName = GetSeedDisplayName(ghost.ItemId, ghost.DisplayName),
+                Season = ghost.Season
             };
         }
 
@@ -1257,6 +1300,9 @@ namespace BlueprintMod
             bool canPlantHere = Game1.currentLocation.CanPlantSeedsHere(target.SeedItemId, (int)targetTile.X, (int)targetTile.Y, target.Mode == PlantingMode.IndoorPot, out deniedMessage);
             string tileText = FormatTile(targetTile);
 
+            if (!IsSeasonAllowedForTarget(target))
+                return CreatePlantingIssue(target, Helper.Translation.Get("msg.planting-fail-season-mismatch", new { tile = tileText, season = GetCurrentLocationSeasonName() }));
+
             if (target.Mode == PlantingMode.Ground)
             {
                 if (!Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var terrainFeature) || terrainFeature is not StardewValley.TerrainFeatures.HoeDirt dirt)
@@ -1298,6 +1344,70 @@ namespace BlueprintMod
             return null;
         }
 
+        private bool IsSeasonAllowedForTarget(PlantingTarget target)
+        {
+            if (target == null)
+                return true;
+
+            if (Game1.currentLocation?.SeedsIgnoreSeasonsHere() == true)
+                return true;
+
+            string currentSeason = GetCurrentLocationSeasonKey();
+            if (string.IsNullOrWhiteSpace(currentSeason))
+                return true;
+
+            string seasonData = !string.IsNullOrWhiteSpace(target.Season)
+                ? target.Season
+                : GetSeedSeasonData(target.SeedItemId);
+
+            if (string.IsNullOrWhiteSpace(seasonData))
+                return true;
+
+            string[] allowedSeasons = seasonData
+                .Split(',')
+                .Select(season => season.Trim().ToLowerInvariant())
+                .Where(season => !string.IsNullOrWhiteSpace(season))
+                .ToArray();
+
+            if (allowedSeasons.Length == 0)
+                return true;
+
+            return allowedSeasons.Contains(currentSeason);
+        }
+
+        private string GetCurrentLocationSeasonKey()
+        {
+            string season = Game1.currentLocation != null
+                ? Game1.currentLocation.GetSeason().ToString()
+                : null;
+            if (string.IsNullOrWhiteSpace(season))
+                season = Game1.currentSeason;
+
+            return season?.Trim().ToLowerInvariant();
+        }
+
+        private string GetCurrentLocationSeasonName()
+        {
+            string seasonKey = GetCurrentLocationSeasonKey();
+            return string.IsNullOrWhiteSpace(seasonKey) ? Game1.currentSeason : seasonKey;
+        }
+
+        private string GetSeedSeasonData(string seedItemId)
+        {
+            string unqualifiedSeedId = seedItemId?.StartsWith("(O)") == true ? seedItemId.Substring(3) : seedItemId;
+            if (string.IsNullOrWhiteSpace(unqualifiedSeedId))
+                return null;
+
+            if (StardewValley.Crop.TryGetData(unqualifiedSeedId, out StardewValley.GameData.Crops.CropData cropData) &&
+                cropData?.Seasons != null &&
+                cropData.Seasons.Count > 0)
+            {
+                return string.Join(", ", cropData.Seasons.Select(season => season.ToString()));
+            }
+
+            return null;
+        }
+
         private PlantingValidationIssue CreatePlantingIssue(PlantingTarget target, string reason)
         {
             return new PlantingValidationIssue
@@ -1320,21 +1430,36 @@ namespace BlueprintMod
                     return false;
                 }
 
+                PlacementAction action = CreatePlantingUndoAction(targets);
                 int plantedCount = 0;
                 foreach (PlantingTarget target in targets)
                 {
                     if (TryPlantTarget(target))
                     {
                         if (!isCreativeMode)
+                        {
                             ConsumeItems(target.SeedItemId, 1);
+                            action.RefundItems.Add(new ItemRequirement { ItemId = target.SeedItemId, Count = 1 });
+                        }
+
+                        GhostItem plantingGhost = FindMatchingPlantingGhost(target);
+                        if (plantingGhost != null)
+                            action.RestoredGhosts.Add(plantingGhost);
+
                         plantedCount++;
                     }
                 }
 
                 if (plantedCount > 0)
+                {
+                    undoStack.Add(action);
+                    if (undoStack.Count > Config.MaxUndoSteps) undoStack.RemoveAt(0);
+                }
+
+                if (plantedCount > 0)
                     Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.assisted-planting-success", new { count = plantedCount }), 2));
 
-                return plantedCount == currentPlantingPlans.Count;
+                return plantedCount == targets.Count;
             }
             catch (Exception ex)
             {
@@ -1343,6 +1468,39 @@ namespace BlueprintMod
                 Game1.showRedMessage(Helper.Translation.Get("msg.assisted-planting-run-error"));
                 return false;
             }
+        }
+
+        private PlacementAction CreatePlantingUndoAction(List<PlantingTarget> targets)
+        {
+            PlacementAction action = new PlacementAction
+            {
+                Location = Game1.currentLocation
+            };
+
+            foreach (PlantingTarget target in targets)
+            {
+                TileChange change = new TileChange { Tile = target.Tile };
+                if (Game1.currentLocation.Objects.TryGetValue(target.Tile, out var obj))
+                    change.OldObject = CloneWorldObject(obj);
+                if (Game1.currentLocation.terrainFeatures.TryGetValue(target.Tile, out var feature))
+                    change.OldTerrainFeature = CloneTerrainFeature(feature, target.Tile);
+                action.Changes.Add(change);
+            }
+
+            return action;
+        }
+
+        private GhostItem FindMatchingPlantingGhost(PlantingTarget target)
+        {
+            if (target == null)
+                return null;
+
+            return placedGhosts.FirstOrDefault(ghost =>
+                ghost.IsPlantingHint &&
+                IsGhostInCurrentLocation(ghost) &&
+                ghost.Tile == target.Tile &&
+                ghost.ItemId == target.SeedItemId &&
+                ghost.PlantingMode == target.Mode);
         }
 
         private int DirectPlantCrops(Vector2 origin)
@@ -1634,6 +1792,49 @@ namespace BlueprintMod
             return new StardewValley.Crop(unqualifiedSeedId, (int)targetTile.X, (int)targetTile.Y, location);
         }
 
+        private StardewValley.Object CloneWorldObject(StardewValley.Object obj)
+        {
+            if (obj == null)
+                return null;
+
+            return obj.getOne() as StardewValley.Object;
+        }
+
+        private StardewValley.TerrainFeatures.TerrainFeature CloneTerrainFeature(StardewValley.TerrainFeatures.TerrainFeature feature, Vector2 tile)
+        {
+            if (feature == null)
+                return null;
+
+            if (feature is StardewValley.TerrainFeatures.HoeDirt dirt)
+                return CloneHoeDirt(dirt, tile);
+
+            if (feature is StardewValley.TerrainFeatures.Flooring flooring)
+                return new StardewValley.TerrainFeatures.Flooring(flooring.whichFloor.Value);
+
+            return feature;
+        }
+
+        private StardewValley.TerrainFeatures.HoeDirt CloneHoeDirt(StardewValley.TerrainFeatures.HoeDirt dirt, Vector2 tile)
+        {
+            int state = Convert.ToInt32(UnwrapNetValue(GetMemberValue(dirt, "state")) ?? 0);
+            var clone = new StardewValley.TerrainFeatures.HoeDirt(state, Game1.currentLocation);
+
+            object fertilizer = UnwrapNetValue(GetMemberValue(dirt, "fertilizer"));
+            if (fertilizer != null)
+                TrySetMemberValue(clone, "fertilizer", fertilizer);
+
+            object crop = UnwrapNetValue(GetMemberValue(dirt, "crop"));
+            if (crop != null)
+            {
+                string seedItemId = GetCropSeedItemId(crop);
+                StardewValley.Crop cropClone = CreateCropInstance(seedItemId, tile, Game1.currentLocation);
+                if (cropClone != null)
+                    TrySetMemberValue(clone, "crop", cropClone);
+            }
+
+            return clone;
+        }
+
         private object UnwrapNetValue(object value)
         {
             if (value == null)
@@ -1686,6 +1887,7 @@ namespace BlueprintMod
         public bool IsPlantingHint { get; set; }
         public PlantingMode PlantingMode { get; set; }
         public string DisplayName { get; set; }
+        public string Season { get; set; }
         public string LocationName { get; set; }
     }
 
@@ -1708,6 +1910,7 @@ namespace BlueprintMod
         public List<TileChange> Changes { get; set; } = new List<TileChange>();
         public List<ItemRequirement> RefundItems { get; set; } = new List<ItemRequirement>();
         public List<GhostItem> AddedGhosts { get; set; } = new List<GhostItem>();
+        public List<GhostItem> RestoredGhosts { get; set; } = new List<GhostItem>();
     }
 
     public class PlantingValidationIssue
@@ -1723,8 +1926,8 @@ namespace BlueprintMod
         public Vector2 Tile { get; set; }
         public string SeedItemId { get; set; }
         public PlantingMode Mode { get; set; }
-
         public string DisplayName { get; set; }
+        public string Season { get; set; }
     }
 
     public class SeedShortage
