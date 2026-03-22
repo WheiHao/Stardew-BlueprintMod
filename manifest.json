@@ -1,7 +1,7 @@
 ﻿{
   "Name": "Farm Blueprint",
   "Author": "R1vr4",
-  "Version": "1.0.0",
+  "Version": "1.1.0",
   "Description": "一个可以下载并一键部署农场蓝图的工具。",
   "UniqueID": "R1vr4.BlueprintMod",
   "EntryDll": "BlueprintMod.dll",
