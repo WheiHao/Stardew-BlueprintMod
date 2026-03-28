@@ -23,7 +23,7 @@ namespace BlueprintMod
         private BlueprintMetadata currentMetadata = null;
         private bool isPreviewMode = false;
         private List<FileInfo> blueprintFiles = new List<FileInfo>();
-        private int currentBlueprintIndex = 0;
+        private FileInfo currentBlueprintFile = null;
         private List<GhostItem> placedGhosts = new List<GhostItem>();
         private List<PlacementAction> undoStack = new List<PlacementAction>();
         private bool isCreativeMode = false;
@@ -260,8 +260,6 @@ namespace BlueprintMod
                     previewItems = null;
                     Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.preview-exited"), 3));
                 }
-                else if (e.Button == SButton.Left || e.Button == SButton.Right)
-                    SwitchBlueprint(e.Button == SButton.Right);
             }
             else if (!isCreativeMode && e.Button == SButton.MouseLeft &&
                      !Helper.Input.IsDown(Config.ModModifier))
@@ -441,7 +439,7 @@ namespace BlueprintMod
         {
             if (isPreviewMode && previewItems != null)
             {
-                string displayName = currentMetadata?.Name ?? blueprintFiles[currentBlueprintIndex].Name;
+                string displayName = currentMetadata?.Name ?? currentBlueprintFile?.Name ?? "";
                 string overwriteModeText = Helper.Translation.Get(isOverwriteMode ? "msg.mode-overwrite" : "msg.mode-safe");
                 string creativeModeText = Helper.Translation.Get(isCreativeMode ? "msg.mode-creative-short" : "msg.mode-survival-short");
                 string topText = Helper.Translation.Get("msg.hud-blueprint", new { name = displayName, overwrite = overwriteModeText, creative = creativeModeText });
@@ -1059,8 +1057,7 @@ namespace BlueprintMod
 
             // 打开图形化浏览器
             Game1.activeClickableMenu = new BlueprintBrowserMenu(blueprintFiles, (selectedFile) => {
-                currentBlueprintIndex = blueprintFiles.IndexOf(selectedFile);
-                LoadCurrentBlueprint();
+                LoadBlueprint(selectedFile);
                 isPreviewMode = true;
             }, (selectedFile) => ExportBlueprintFile(selectedFile), Helper, GetTotalItemCount);
         }
@@ -1104,11 +1101,17 @@ namespace BlueprintMod
             }
         }
 
-        private void SwitchBlueprint(bool next) { if (blueprintFiles.Count > 1) { currentBlueprintIndex = next ? (currentBlueprintIndex + 1) % blueprintFiles.Count : (currentBlueprintIndex - 1 + blueprintFiles.Count) % blueprintFiles.Count; LoadCurrentBlueprint(); Game1.playSound("shwip"); } }
-
-        private void LoadCurrentBlueprint()
+        private void LoadBlueprint(FileInfo blueprintFile)
         {
-            var file = this.Helper.Data.ReadJsonFile<BlueprintFile>($"blueprints/{blueprintFiles[currentBlueprintIndex].Name}");
+            currentBlueprintFile = blueprintFile;
+            if (currentBlueprintFile == null)
+            {
+                Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.error-parse-failed"), 1));
+                isPreviewMode = false;
+                return;
+            }
+
+            var file = this.Helper.Data.ReadJsonFile<BlueprintFile>($"blueprints/{currentBlueprintFile.Name}");
             if (file != null && file.Items != null)
             {
                 previewItems = file.Items;
