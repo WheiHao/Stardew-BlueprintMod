@@ -266,10 +266,15 @@ namespace BlueprintMod
             else if (!isCreativeMode && e.Button == SButton.MouseLeft &&
                      !Helper.Input.IsDown(Config.ModModifier))
             {
+                Vector2 tile = new Vector2((int)e.Cursor.Tile.X, (int)e.Cursor.Tile.Y);
+                GhostItem matchingGhost = GetFillableGhostAtTile(tile);
+                if (matchingGhost == null)
+                    return;
+
                 if (!CanCurrentPlayerModifyWorld())
                     return;
 
-                HandleGhostFilling(new Vector2((int)e.Cursor.Tile.X, (int)e.Cursor.Tile.Y));
+                HandleGhostFilling(tile, matchingGhost);
             }
         }
 
@@ -695,9 +700,18 @@ namespace BlueprintMod
             }
         }
 
-        private void HandleGhostFilling(Vector2 tile)
+        private GhostItem GetFillableGhostAtTile(Vector2 tile)
         {
-            var ghost = placedGhosts.FirstOrDefault(g => !g.IsPlantingHint && IsGhostInCurrentLocation(g) && g.Tile == tile && Game1.player.ActiveItem?.QualifiedItemId == g.ItemId);
+            return placedGhosts.FirstOrDefault(g =>
+                !g.IsPlantingHint &&
+                IsGhostInCurrentLocation(g) &&
+                g.Tile == tile &&
+                Game1.player.ActiveItem?.QualifiedItemId == g.ItemId);
+        }
+
+        private void HandleGhostFilling(Vector2 tile, GhostItem ghost = null)
+        {
+            ghost ??= GetFillableGhostAtTile(tile);
             if (ghost != null)
             {
                 string reqId = ghost.ItemId;
