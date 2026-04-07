@@ -9,6 +9,7 @@ using StardewValley;
 using StardewValley.ItemTypeDefinitions;
 using StardewValley.Menus;
 using System.Collections.Generic;
+using System.Collections;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -299,7 +300,7 @@ namespace BlueprintMod
                     {
                         Vector2 targetTile = new Vector2(mouseTile.X + x, mouseTile.Y + y);
                         Vector2 relativeTile = new Vector2(x, y);
-                        var itemAtTile = previewItems.FirstOrDefault(i => (int)i.TileX == x && (int)i.TileY == y);
+                        var itemAtTile = GetPreviewItemAtRelativeTile(relativeTile, includeFurnitureFootprint: true);
                         bool hasPlantingPlan = plantingLookup[relativeTile].Any();
                         if (Game1.currentLocation.Objects.TryGetValue(targetTile, out var worldObj) && IsObjectPlacementBlocked(worldObj, itemAtTile, hasPlantingPlan)) { hasCollision = true; break; }
                         if (Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var feature))
@@ -389,7 +390,7 @@ namespace BlueprintMod
                         Vector2 targetTile = new Vector2(mouseTile.X + x, mouseTile.Y + y);
                         var itemsAtTile = itemLookup[relativeTile];
                         var plantingPlansAtTile = plantingLookup[relativeTile];
-                        var primaryItemAtTile = itemsAtTile.FirstOrDefault();
+                        var primaryItemAtTile = GetPreviewItemAtRelativeTile(relativeTile, includeFurnitureFootprint: true);
                         
                         bool tileBlockedByObject = Game1.currentLocation.Objects.TryGetValue(targetTile, out var worldObj) && !IsDebris(worldObj);
                         bool itemPlacementBlockedByObject = Game1.currentLocation.Objects.TryGetValue(targetTile, out var blockingObj) && IsObjectPlacementBlocked(blockingObj, primaryItemAtTile, plantingPlansAtTile.Any());
@@ -629,8 +630,11 @@ namespace BlueprintMod
             if (previewItems == null) return null;
 
             PlacementAction action = new PlacementAction { Location = Game1.currentLocation, RefundItems = refunds ?? new List<ItemRequirement>() };
+            if (previewItems.Any(item => item.ItemType == "Furniture"))
+                action.OldFurniture = CloneLocationFurniture(Game1.currentLocation);
+
             var affectedTiles = previewItems
-                .Select(i => new Vector2(origin.X + i.TileX, origin.Y + i.TileY))
+                .SelectMany(i => GetOccupiedWorldTiles(origin, i))
                 .Concat((currentPlantingPlans ?? new List<PlantingPlan>()).Select(plan => new Vector2(origin.X + plan.TileX, origin.Y + plan.TileY)))
                 .Distinct();
             foreach (var tile in affectedTiles)
@@ -649,11 +653,18 @@ namespace BlueprintMod
                 {
                     if (Game1.currentLocation.Objects.ContainsKey(targetTile)) Game1.currentLocation.Objects.Remove(targetTile);
                     if (item.ItemType == "Flooring" && Game1.currentLocation.terrainFeatures.ContainsKey(targetTile)) Game1.currentLocation.terrainFeatures.Remove(targetTile);
+                    if (item.ItemType == "Furniture")
+                        RemoveFurnitureOverlappingTiles(Game1.currentLocation, GetOccupiedWorldTiles(origin, item));
                 }
                 if (item.ItemType == "Flooring")
                 {
                     string fId = !string.IsNullOrEmpty(item.FlooringId) ? item.FlooringId : item.ItemId.Replace("(O)", "");
                     if (!Game1.currentLocation.terrainFeatures.ContainsKey(targetTile)) Game1.currentLocation.terrainFeatures.Add(targetTile, new StardewValley.TerrainFeatures.Flooring(fId));
+                }
+                else if (item.ItemType == "Furniture")
+                {
+                    if (!TryPlaceFurnitureItem(item, targetTile))
+                        Monitor.Log($"Failed to place furniture '{item.ItemId}' at {targetTile}.", LogLevel.Warn);
                 }
                 else
                 {
@@ -679,7 +690,16 @@ namespace BlueprintMod
             foreach (var item in previewItems)
             {
                 Vector2 targetTile = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
-                GhostItem ghost = new GhostItem { Tile = targetTile, ItemId = item.ItemId, LocationName = Game1.currentLocation?.NameOrUniqueName };
+                GhostItem ghost = new GhostItem
+                {
+                    Tile = targetTile,
+                    ItemId = item.ItemId,
+                    ItemType = item.ItemType,
+                    Rotation = item.Rotation,
+                    TilesWide = item.TilesWide,
+                    TilesHigh = item.TilesHigh,
+                    LocationName = Game1.currentLocation?.NameOrUniqueName
+                };
                 if (AddGhost(ghost))
                     addedGhosts.Add(ghost);
             }
@@ -726,8 +746,17 @@ namespace BlueprintMod
                 }
                 else if (!Game1.currentLocation.Objects.ContainsKey(tile))
                 {
-                    var newObj = (StardewValley.Object)ItemRegistry.Create(reqId);
-                    placed = newObj.placementAction(Game1.currentLocation, (int)tile.X * 64, (int)tile.Y * 64, Game1.player);
+                    Item activeItem = ItemRegistry.Create(reqId);
+                    if (activeItem is StardewValley.Objects.Furniture furniture)
+                    {
+                        int rotation = ghost?.Rotation ?? 0;
+                        furniture.SetPlacement(tile, rotation);
+                        placed = furniture.placementAction(Game1.currentLocation, (int)tile.X * 64, (int)tile.Y * 64, Game1.player);
+                    }
+                    else if (activeItem is StardewValley.Object newObj)
+                    {
+                        placed = newObj.placementAction(Game1.currentLocation, (int)tile.X * 64, (int)tile.Y * 64, Game1.player);
+                    }
                 }
                 if (placed)
                 {
@@ -810,6 +839,8 @@ namespace BlueprintMod
                 existing.LocationName == ghost.LocationName &&
                 existing.Tile == ghost.Tile &&
                 existing.ItemId == ghost.ItemId &&
+                existing.ItemType == ghost.ItemType &&
+                existing.Rotation == ghost.Rotation &&
                 existing.IsPlantingHint == ghost.IsPlantingHint &&
                 existing.PlantingMode == ghost.PlantingMode);
 
@@ -832,6 +863,13 @@ namespace BlueprintMod
 
                 if (Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var feature) && feature is StardewValley.TerrainFeatures.Flooring flooring)
                     return "(O)" + (flooring.GetData()?.ItemId ?? "") == ghost.ItemId;
+
+                if (ghost.ItemType == "Furniture")
+                {
+                    StardewValley.Objects.Furniture furniture = FindFurnitureAtTile(Game1.currentLocation, tile, ghost.ItemId);
+                    if (furniture != null)
+                        return true;
+                }
 
                 return false;
             }
@@ -952,6 +990,9 @@ namespace BlueprintMod
             PlacementAction action = undoStack.Last();
             undoStack.RemoveAt(undoStack.Count - 1);
 
+            if (action.OldFurniture != null)
+                RestoreLocationFurniture(action.Location, action.OldFurniture);
+
             foreach (var change in action.Changes)
             {
                 if (action.Location.Objects.ContainsKey(change.Tile)) action.Location.Objects.Remove(change.Tile);
@@ -974,6 +1015,8 @@ namespace BlueprintMod
                     added.LocationName == ghost.LocationName &&
                     added.Tile == ghost.Tile &&
                     added.ItemId == ghost.ItemId &&
+                    added.ItemType == ghost.ItemType &&
+                    added.Rotation == ghost.Rotation &&
                     added.IsPlantingHint == ghost.IsPlantingHint &&
                     added.PlantingMode == ghost.PlantingMode));
             }
@@ -986,6 +1029,10 @@ namespace BlueprintMod
                     {
                         Tile = ghost.Tile,
                         ItemId = ghost.ItemId,
+                        ItemType = ghost.ItemType,
+                        Rotation = ghost.Rotation,
+                        TilesWide = ghost.TilesWide,
+                        TilesHigh = ghost.TilesHigh,
                         IsPlantingHint = ghost.IsPlantingHint,
                         PlantingMode = ghost.PlantingMode,
                         DisplayName = ghost.DisplayName,
@@ -1026,6 +1073,22 @@ namespace BlueprintMod
                     if (groundPlan != null)
                         plantingPlans.Add(groundPlan);
                 }
+            }
+            foreach (StardewValley.Objects.Furniture furniture in GetFurnitureInArea(location, minX, maxX, minY, maxY))
+            {
+                Vector2 tile = furniture.TileLocation;
+                Point size = GetFurnitureTileSize(furniture);
+                items.Add(new BlueprintItem
+                {
+                    ItemId = furniture.QualifiedItemId,
+                    TileX = tile.X - minX,
+                    TileY = tile.Y - minY,
+                    Name = furniture.DisplayName,
+                    ItemType = "Furniture",
+                    Rotation = GetFurnitureRotation(furniture),
+                    TilesWide = size.X,
+                    TilesHigh = size.Y
+                });
             }
 
             if (items.Count > 0 || plantingPlans.Count > 0)
@@ -1817,6 +1880,186 @@ namespace BlueprintMod
             return obj.getOne() as StardewValley.Object;
         }
 
+        private List<StardewValley.Objects.Furniture> CloneLocationFurniture(GameLocation location)
+        {
+            return GetLocationFurniture(location)
+                .Select(CloneFurniture)
+                .Where(clone => clone != null)
+                .ToList();
+        }
+
+        private StardewValley.Objects.Furniture CloneFurniture(StardewValley.Objects.Furniture furniture)
+        {
+            if (furniture == null)
+                return null;
+
+            StardewValley.Objects.Furniture clone = furniture.getOne() as StardewValley.Objects.Furniture;
+            if (clone == null)
+                return null;
+
+            clone.SetPlacement(furniture.TileLocation, GetFurnitureRotation(furniture));
+
+            if (furniture.heldObject.Value != null)
+                clone.SetHeldObject(CloneWorldObject(furniture.heldObject.Value));
+
+            return clone;
+        }
+
+        private void RestoreLocationFurniture(GameLocation location, List<StardewValley.Objects.Furniture> furnitureSnapshot)
+        {
+            if (location == null)
+                return;
+
+            object furnitureCollection = GetMemberValue(location, "furniture");
+            if (furnitureCollection is IList list)
+            {
+                list.Clear();
+                foreach (StardewValley.Objects.Furniture furniture in furnitureSnapshot ?? Enumerable.Empty<StardewValley.Objects.Furniture>())
+                    list.Add(CloneFurniture(furniture));
+            }
+        }
+
+        private IEnumerable<StardewValley.Objects.Furniture> GetLocationFurniture(GameLocation location)
+        {
+            if (location == null)
+                return Enumerable.Empty<StardewValley.Objects.Furniture>();
+
+            object furnitureCollection = GetMemberValue(location, "furniture");
+            if (furnitureCollection is IEnumerable enumerable)
+                return enumerable.Cast<object>().OfType<StardewValley.Objects.Furniture>();
+
+            return Enumerable.Empty<StardewValley.Objects.Furniture>();
+        }
+
+        private IEnumerable<StardewValley.Objects.Furniture> GetFurnitureInArea(GameLocation location, int minX, int maxX, int minY, int maxY)
+        {
+            return GetLocationFurniture(location)
+                .Where(furniture =>
+                {
+                    foreach (Vector2 tile in GetFurnitureOccupiedTiles(furniture))
+                    {
+                        if (tile.X >= minX && tile.X <= maxX && tile.Y >= minY && tile.Y <= maxY)
+                            return true;
+                    }
+
+                    return false;
+                });
+        }
+
+        private IEnumerable<Vector2> GetFurnitureOccupiedTiles(StardewValley.Objects.Furniture furniture)
+        {
+            if (furniture == null)
+                yield break;
+
+            Point size = GetFurnitureTileSize(furniture);
+            Vector2 origin = furniture.TileLocation;
+
+            for (int x = 0; x < Math.Max(1, size.X); x++)
+            {
+                for (int y = 0; y < Math.Max(1, size.Y); y++)
+                    yield return new Vector2(origin.X + x, origin.Y + y);
+            }
+        }
+
+        private Point GetFurnitureTileSize(StardewValley.Objects.Furniture furniture)
+        {
+            if (furniture == null)
+                return new Point(1, 1);
+
+            Rectangle bounds = furniture.GetBoundingBoxAt((int)furniture.TileLocation.X * 64, (int)furniture.TileLocation.Y * 64);
+            int tilesWide = Math.Max(1, (int)Math.Ceiling(bounds.Width / 64f));
+            int tilesHigh = Math.Max(1, (int)Math.Ceiling(bounds.Height / 64f));
+            return new Point(tilesWide, tilesHigh);
+        }
+
+        private int GetFurnitureRotation(StardewValley.Objects.Furniture furniture)
+        {
+            object rotation = UnwrapNetValue(GetMemberValue(furniture, "currentRotation"))
+                ?? UnwrapNetValue(GetMemberValue(furniture, "rotations"))
+                ?? GetMemberValue(furniture, "currentRotation");
+
+            return rotation != null ? Convert.ToInt32(rotation) : 0;
+        }
+
+        private IEnumerable<Vector2> GetOccupiedWorldTiles(Vector2 origin, BlueprintItem item)
+        {
+            int width = Math.Max(1, item?.TilesWide ?? 1);
+            int height = Math.Max(1, item?.TilesHigh ?? 1);
+            Vector2 itemOrigin = new Vector2(origin.X + item.TileX, origin.Y + item.TileY);
+
+            if (item?.ItemType == "Furniture")
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    for (int y = 0; y < height; y++)
+                        yield return new Vector2(itemOrigin.X + x, itemOrigin.Y + y);
+                }
+
+                yield break;
+            }
+
+            yield return itemOrigin;
+        }
+
+        private BlueprintItem GetPreviewItemAtRelativeTile(Vector2 relativeTile, bool includeFurnitureFootprint)
+        {
+            if (previewItems == null)
+                return null;
+
+            foreach (BlueprintItem item in previewItems)
+            {
+                if (item.ItemType == "Furniture" && includeFurnitureFootprint)
+                {
+                    int width = Math.Max(1, item.TilesWide);
+                    int height = Math.Max(1, item.TilesHigh);
+                    if (relativeTile.X >= item.TileX && relativeTile.X < item.TileX + width &&
+                        relativeTile.Y >= item.TileY && relativeTile.Y < item.TileY + height)
+                    {
+                        return item;
+                    }
+                }
+
+                if ((int)item.TileX == (int)relativeTile.X && (int)item.TileY == (int)relativeTile.Y)
+                    return item;
+            }
+
+            return null;
+        }
+
+        private bool TryPlaceFurnitureItem(BlueprintItem item, Vector2 targetTile)
+        {
+            Item newItem = ItemRegistry.Create(item.ItemId);
+            if (newItem is not StardewValley.Objects.Furniture furniture)
+                return false;
+
+            furniture.SetPlacement(targetTile, item.Rotation);
+            return furniture.placementAction(Game1.currentLocation, (int)targetTile.X * 64, (int)targetTile.Y * 64, Game1.player);
+        }
+
+        private void RemoveFurnitureOverlappingTiles(GameLocation location, IEnumerable<Vector2> tiles)
+        {
+            HashSet<Vector2> tileSet = tiles?.ToHashSet() ?? new HashSet<Vector2>();
+            if (tileSet.Count == 0)
+                return;
+
+            object furnitureCollection = GetMemberValue(location, "furniture");
+            if (furnitureCollection is IList list)
+            {
+                for (int i = list.Count - 1; i >= 0; i--)
+                {
+                    if (list[i] is StardewValley.Objects.Furniture furniture && GetFurnitureOccupiedTiles(furniture).Any(tileSet.Contains))
+                        list.RemoveAt(i);
+                }
+            }
+        }
+
+        private StardewValley.Objects.Furniture FindFurnitureAtTile(GameLocation location, Vector2 tile, string itemId = null)
+        {
+            return GetLocationFurniture(location).FirstOrDefault(furniture =>
+                (string.IsNullOrWhiteSpace(itemId) || furniture.QualifiedItemId == itemId) &&
+                GetFurnitureOccupiedTiles(furniture).Any(occupiedTile => occupiedTile == tile));
+        }
+
         private StardewValley.TerrainFeatures.TerrainFeature CloneTerrainFeature(StardewValley.TerrainFeatures.TerrainFeature feature, Vector2 tile)
         {
             if (feature == null)
@@ -1883,7 +2126,18 @@ namespace BlueprintMod
 
     public class BlueprintFile { public BlueprintMetadata Metadata { get; set; } public List<BlueprintItem> Items { get; set; } public List<PlantingPlan> PlantingPlans { get; set; } = new List<PlantingPlan>(); }
     public class BlueprintMetadata { public string Name { get; set; } public int Width { get; set; } public int Height { get; set; } }
-    public class BlueprintItem { public string ItemId { get; set; } public string FlooringId { get; set; } public float TileX { get; set; } public float TileY { get; set; } public string Name { get; set; } public string ItemType { get; set; } = "Object"; }
+    public class BlueprintItem
+    {
+        public string ItemId { get; set; }
+        public string FlooringId { get; set; }
+        public float TileX { get; set; }
+        public float TileY { get; set; }
+        public string Name { get; set; }
+        public string ItemType { get; set; } = "Object";
+        public int Rotation { get; set; }
+        public int TilesWide { get; set; } = 1;
+        public int TilesHigh { get; set; } = 1;
+    }
     public enum PlantingMode { Ground, IndoorPot }
     public class PlantingPlan
     {
@@ -1901,6 +2155,10 @@ namespace BlueprintMod
     {
         public Vector2 Tile { get; set; }
         public string ItemId { get; set; }
+        public string ItemType { get; set; }
+        public int Rotation { get; set; }
+        public int TilesWide { get; set; } = 1;
+        public int TilesHigh { get; set; } = 1;
         public bool IsPlantingHint { get; set; }
         public PlantingMode PlantingMode { get; set; }
         public string DisplayName { get; set; }
@@ -1928,6 +2186,7 @@ namespace BlueprintMod
         public List<ItemRequirement> RefundItems { get; set; } = new List<ItemRequirement>();
         public List<GhostItem> AddedGhosts { get; set; } = new List<GhostItem>();
         public List<GhostItem> RestoredGhosts { get; set; } = new List<GhostItem>();
+        public List<StardewValley.Objects.Furniture> OldFurniture { get; set; }
     }
 
     public class PlantingValidationIssue
