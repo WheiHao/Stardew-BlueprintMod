@@ -1,0 +1,19 @@
+<Project>
+  <!--
+    Shared MSBuild settings.
+
+    Many IDE "Problems" (IntelliSense) errors in SMAPI mods happen when the IDE
+    doesn't load *.csproj.user files, so ModBuildConfig can't find the game
+    assemblies and SMAPI references. This file provides a repo-wide fallback:
+    - Allow setting the game path via an environment variable: StardewGamePath
+    - Allow an optional local-only override file: Directory.Build.props.user
+  -->
+
+  <PropertyGroup>
+    <!-- Prefer explicit GamePath if already set elsewhere. -->
+    <GamePath Condition="'$(GamePath)' == '' and '$(StardewGamePath)' != ''">$(StardewGamePath)</GamePath>
+  </PropertyGroup>
+
+  <!-- Local-only overrides (ignored by git). -->
+  <Import Project="Directory.Build.props.user" Condition="Exists('Directory.Build.props.user')" />
+</Project>

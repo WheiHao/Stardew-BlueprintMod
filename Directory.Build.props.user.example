@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <!-- Set this to your Stardew Valley install folder (the one containing Stardew Valley.exe). -->
+    <GamePath>E:\SteamLibrary\steamapps\common\Stardew Valley</GamePath>
+  </PropertyGroup>
+</Project>
