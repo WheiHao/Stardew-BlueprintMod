@@ -408,7 +408,18 @@ namespace BlueprintMod
                                         isBlocked = IsTerrainFeatureBlocked(feature, item, plantingPlansAtTile.Any());
                                     }
                                 }
-                                DrawGhost(e.SpriteBatch, targetTile, item.ItemId, 0.5f, isBlocked ? Color.Red * 0.8f : (isCreativeMode ? Color.LightGreen : Color.Cyan));
+                                DrawGhost(
+                                    e.SpriteBatch,
+                                    targetTile,
+                                    item.ItemId,
+                                    0.5f,
+                                    isBlocked ? Color.Red * 0.8f : (isCreativeMode ? Color.LightGreen : Color.Cyan),
+                                    1f,
+                                    item.Rotation,
+                                    item.ItemType,
+                                    item.TilesWide,
+                                    item.TilesHigh
+                                );
                             }
                         }
                         else if (!isOverwriteMode)
@@ -432,7 +443,18 @@ namespace BlueprintMod
                 if (ghost.IsPlantingHint)
                     DrawPlantingHintBackground(e.SpriteBatch, ghost);
 
-                DrawGhost(e.SpriteBatch, ghost.Tile, ghost.ItemId, GetGhostAlpha(ghost), GetGhostTint(ghost), GetGhostScale(ghost));
+                DrawGhost(
+                    e.SpriteBatch,
+                    ghost.Tile,
+                    ghost.ItemId,
+                    GetGhostAlpha(ghost),
+                    GetGhostTint(ghost),
+                    GetGhostScale(ghost),
+                    ghost.Rotation,
+                    ghost.ItemType,
+                    ghost.TilesWide,
+                    ghost.TilesHigh
+                );
             }
         }
 
@@ -770,16 +792,58 @@ namespace BlueprintMod
 
         private void DrawGhost(SpriteBatch b, Vector2 tile, string itemId, float alpha, Color tint, float scale = 1f)
         {
+            DrawGhost(b, tile, itemId, alpha, tint, scale, rotation: 0, itemType: null, tilesWide: 1, tilesHigh: 1);
+        }
+
+        private void DrawGhost(SpriteBatch b, Vector2 tile, string itemId, float alpha, Color tint, float scale, int rotation, string itemType, int tilesWide, int tilesHigh)
+        {
             ParsedItemData itemData = ItemRegistry.GetData(itemId);
             if (itemData != null)
             {
                 Rectangle sourceRect = itemData.GetSourceRect();
                 int width = (int)(sourceRect.Width * 4 * scale);
                 int height = (int)(sourceRect.Height * 4 * scale);
-                int x = (int)(tile.X * 64 - Game1.viewport.X + (64 - width) / 2f);
-                int y = (int)((tile.Y + 1) * 64 - Game1.viewport.Y - height);
+
+                // Furniture sprites are anchored to their footprint (top-left tile location, bottom aligned to
+                // the bottom of the occupied tiles). Using the 1-tile object formula causes visible offset.
+                bool isFurniture = string.Equals(itemType, "Furniture", StringComparison.OrdinalIgnoreCase);
+                int footprintWidth = Math.Max(1, tilesWide);
+                int footprintHeight = Math.Max(1, tilesHigh);
+                if (isFurniture && footprintWidth == 1 && footprintHeight == 1)
+                {
+                    Point inferred = InferFurnitureFootprintFromSprite(itemId, rotation);
+                    footprintWidth = inferred.X;
+                    footprintHeight = inferred.Y;
+                }
+
+                int x;
+                int y;
+                if (isFurniture)
+                {
+                    if (DrawFurnitureGhost(b, tile, itemId, alpha, rotation))
+                        return;
+
+                    x = (int)(tile.X * 64 - Game1.viewport.X);
+                    y = (int)(tile.Y * 64 - Game1.viewport.Y);
+                }
+                else
+                {
+                    x = (int)(tile.X * 64 - Game1.viewport.X + (64 - width) / 2f);
+                    y = (int)((tile.Y + 1) * 64 - Game1.viewport.Y - height);
+                }
+
                 b.Draw(itemData.GetTexture(), new Rectangle(x, y, width, height), sourceRect, tint * alpha);
             }
+        }
+
+        private bool DrawFurnitureGhost(SpriteBatch b, Vector2 tile, string itemId, float alpha, int rotation)
+        {
+            if (ItemRegistry.Create(itemId) is not StardewValley.Objects.Furniture furniture)
+                return false;
+
+            furniture.SetPlacement(tile, rotation);
+            furniture.draw(b, (int)tile.X, (int)tile.Y, alpha);
+            return true;
         }
 
         private bool IsGhostInCurrentLocation(GhostItem ghost)
@@ -1180,12 +1244,62 @@ namespace BlueprintMod
                 previewItems = file.Items;
                 currentMetadata = file.Metadata;
                 currentPlantingPlans = file.PlantingPlans ?? new List<PlantingPlan>();
+
+                NormalizeLoadedBlueprintItems(previewItems);
             }
             else
             {
                 Game1.addHUDMessage(new HUDMessage(Helper.Translation.Get("msg.error-parse-failed"), 1));
                 isPreviewMode = false;
             }
+        }
+
+        private void NormalizeLoadedBlueprintItems(List<BlueprintItem> items)
+        {
+            if (items == null || items.Count == 0)
+                return;
+
+            foreach (BlueprintItem item in items)
+            {
+                if (!string.Equals(item?.ItemType, "Furniture", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                int tilesWide = Math.Max(1, item.TilesWide);
+                int tilesHigh = Math.Max(1, item.TilesHigh);
+
+                // Some furniture report a 1x1 bounding box even when their sprite/footprint is larger (e.g. tables).
+                // If the saved size is missing/default, infer it from the item sprite.
+                if (tilesWide == 1 && tilesHigh == 1)
+                {
+                    Point inferred = InferFurnitureFootprintFromSprite(item.ItemId, item.Rotation);
+                    item.TilesWide = inferred.X;
+                    item.TilesHigh = inferred.Y;
+                }
+            }
+        }
+
+        private Point InferFurnitureFootprintFromSprite(string itemId, int rotation)
+        {
+            ParsedItemData itemData = ItemRegistry.GetData(itemId);
+            if (itemData == null)
+                return new Point(1, 1);
+
+            Rectangle source = itemData.GetSourceRect();
+            if (source.Width <= 0 || source.Height <= 0)
+                return new Point(1, 1);
+
+            // Furniture textures are in 16px-per-tile units, then drawn scaled up 4x to 64px tiles.
+            int tilesWide = Math.Max(1, (int)Math.Ceiling(source.Width / 16f));
+            int tilesHigh = Math.Max(1, (int)Math.Ceiling(source.Height / 16f));
+
+            if (rotation % 2 != 0)
+            {
+                int tmp = tilesWide;
+                tilesWide = tilesHigh;
+                tilesHigh = tmp;
+            }
+
+            return new Point(tilesWide, tilesHigh);
         }
 
         private void QueueAssistedPlantingPrompt(Vector2 origin)
