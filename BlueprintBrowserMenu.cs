@@ -235,7 +235,12 @@ namespace BlueprintMod
 
             if (activeBlueprint != null)
             {
-                var requirements = activeBlueprint.Items.GroupBy(i => i.ItemId).Select(g => new { ItemId = g.Key, Count = g.Count() }).ToList();
+                var requirements = activeBlueprint.Items
+                    .SelectMany(item => new[] { item.ItemId, item.AttachmentItemId })
+                    .Where(itemId => !string.IsNullOrWhiteSpace(itemId))
+                    .GroupBy(itemId => itemId, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => new { ItemId = group.Key, Count = group.Count() })
+                    .ToList();
                 var plantingRequirements = (activeBlueprint.PlantingPlans ?? new List<PlantingPlan>())
                     .GroupBy(plan => new { plan.SeedItemId, plan.Mode, plan.DisplayName, plan.Season })
                     .Select(g => new

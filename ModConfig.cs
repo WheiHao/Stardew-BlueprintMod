@@ -24,6 +24,7 @@ namespace BlueprintMod
         public bool EnableCreativeMode { get; set; } = false;
         public bool DefaultOverwriteMode { get; set; } = true;
         public bool DefaultCreativeMode { get; set; } = false;
+        public bool SaveWallFurniture { get; set; } = true;
         public int MaxUndoSteps { get; set; } = 10;
 
         public string ExportPath { get; set; } = "";

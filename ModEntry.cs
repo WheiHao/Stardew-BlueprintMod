@@ -107,6 +107,12 @@ namespace BlueprintMod
                     val => Config.DefaultOverwriteMode = val,
                     () => "默认开启覆盖模式");
 
+                configMenu.AddBoolOption(ModManifest,
+                    () => Config.SaveWallFurniture,
+                    val => Config.SaveWallFurniture = val,
+                    () => Helper.Translation.Get("config.save-wall-furniture"),
+                    () => Helper.Translation.Get("config.save-wall-furniture.tooltip"));
+
                 configMenu.AddTextOption(ModManifest,
                     () => Config.ExportPath,
                     val => Config.ExportPath = val ?? "",
@@ -316,7 +322,7 @@ namespace BlueprintMod
 
             if (!isCreativeMode)
             {
-                var requirements = previewItems.GroupBy(i => i.ItemId).Select(g => new ItemRequirement { ItemId = g.Key, Count = g.Count() }).ToList();
+                var requirements = GetBlueprintItemRequirements(previewItems);
                 bool hasEverything = requirements.All(req => GetTotalItemCount(req.ItemId) >= req.Count);
 
                 if (hasEverything)
@@ -505,7 +511,7 @@ namespace BlueprintMod
         private void DrawShoppingList(SpriteBatch b)
         {
             if (previewItems == null) return;
-            var requirements = previewItems.GroupBy(i => i.ItemId).Select(g => new { ItemId = g.Key, RequiredCount = g.Count() }).ToList();
+            List<ItemRequirement> requirements = GetBlueprintItemRequirements(previewItems);
             int xPos = Game1.uiViewport.Width - 300, yPos = 150;
             int plantingRows = currentPlantingPlans
                 .GroupBy(plan => new { plan.SeedItemId, plan.Mode })
@@ -524,7 +530,7 @@ namespace BlueprintMod
                 if (itemData != null)
                 {
                     b.Draw(itemData.GetTexture(), new Rectangle(xPos, yPos, 32, 32), itemData.GetSourceRect(), Color.White);
-                    b.DrawString(Game1.smallFont, $"{req.RequiredCount} ({totalHas})", new Vector2(xPos + 40, yPos + 4), totalHas >= req.RequiredCount ? Color.White : Color.Red);
+                    b.DrawString(Game1.smallFont, $"{req.Count} ({totalHas})", new Vector2(xPos + 40, yPos + 4), totalHas >= req.Count ? Color.White : Color.Red);
                     yPos += 35;
                 }
             }
@@ -647,6 +653,54 @@ namespace BlueprintMod
             }
         }
 
+        private List<ItemRequirement> GetBlueprintItemRequirements(IEnumerable<BlueprintItem> items)
+        {
+            return (items ?? Enumerable.Empty<BlueprintItem>())
+                .SelectMany(item => new[] { item.ItemId, item.AttachmentItemId })
+                .Where(itemId => !string.IsNullOrWhiteSpace(itemId))
+                .GroupBy(itemId => itemId, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new ItemRequirement { ItemId = group.Key, Count = group.Count() })
+                .ToList();
+        }
+
+        private string GetSprinklerAttachmentItemId(StardewValley.Object obj)
+        {
+            if (obj?.IsSprinkler() != true)
+                return null;
+
+            return obj.heldObject.Value?.QualifiedItemId;
+        }
+
+        private bool TryApplyObjectAttachment(StardewValley.Object obj, string attachmentItemId)
+        {
+            if (obj?.IsSprinkler() != true || string.IsNullOrWhiteSpace(attachmentItemId))
+                return string.IsNullOrWhiteSpace(attachmentItemId);
+
+            if (ItemRegistry.Create(attachmentItemId) is not StardewValley.Object attachment)
+                return false;
+
+            obj.heldObject.Value = attachment;
+            return true;
+        }
+
+        private bool TryApplyAttachmentToPlacedObject(Vector2 tile, string attachmentItemId)
+        {
+            if (string.IsNullOrWhiteSpace(attachmentItemId))
+                return true;
+
+            return Game1.currentLocation.Objects.TryGetValue(tile, out StardewValley.Object placedObject) &&
+                TryApplyObjectAttachment(placedObject, attachmentItemId);
+        }
+
+        private bool DoesObjectMatchGhost(StardewValley.Object obj, GhostItem ghost)
+        {
+            if (obj == null || ghost == null || obj.QualifiedItemId != ghost.ItemId)
+                return false;
+
+            string actualAttachmentId = GetSprinklerAttachmentItemId(obj);
+            return string.Equals(actualAttachmentId, ghost.AttachmentItemId, StringComparison.OrdinalIgnoreCase);
+        }
+
         private PlacementAction PlaceBlueprintReal(Vector2 origin, List<ItemRequirement> refunds = null)
         {
             if (previewItems == null) return null;
@@ -694,7 +748,19 @@ namespace BlueprintMod
                     if (newItem is StardewValley.Object obj)
                     {
                         obj.TileLocation = targetTile;
-                        obj.placementAction(Game1.currentLocation, (int)targetTile.X * 64, (int)targetTile.Y * 64, Game1.player);
+                        bool placed = obj.placementAction(Game1.currentLocation, (int)targetTile.X * 64, (int)targetTile.Y * 64, Game1.player);
+                        if (placed)
+                        {
+                            // Blueprint placement bypasses the game's normal tool interaction, so a
+                            // sprinkler can otherwise be inserted without removing the crop below it.
+                            // Safe mode rejects that collision before this point; overwrite mode is
+                            // allowed to replace it, and creative mode should do the same.
+                            if (obj.IsSprinkler())
+                                ClearGroundCrop(targetTile);
+
+                            if (!TryApplyAttachmentToPlacedObject(targetTile, item.AttachmentItemId))
+                                Monitor.Log($"Failed to apply attachment '{item.AttachmentItemId}' to placed object '{item.ItemId}' at {targetTile}.", LogLevel.Warn);
+                        }
                     }
                 }
             }
@@ -717,6 +783,7 @@ namespace BlueprintMod
                     Tile = targetTile,
                     ItemId = item.ItemId,
                     ItemType = item.ItemType,
+                    AttachmentItemId = item.AttachmentItemId,
                     Rotation = item.Rotation,
                     TilesWide = item.TilesWide,
                     TilesHigh = item.TilesHigh,
@@ -754,6 +821,13 @@ namespace BlueprintMod
             ghost ??= GetFillableGhostAtTile(tile);
             if (ghost != null)
             {
+                if (!string.IsNullOrWhiteSpace(ghost.AttachmentItemId) && GetTotalItemCount(ghost.AttachmentItemId) < 1)
+                {
+                    string attachmentName = ItemRegistry.GetData(ghost.AttachmentItemId)?.DisplayName ?? ghost.AttachmentItemId;
+                    Game1.showRedMessage(Helper.Translation.Get("msg.ghost-missing-attachment", new { name = attachmentName }));
+                    return;
+                }
+
                 string reqId = ghost.ItemId;
                 bool placed = false;
                 var itemData = ItemRegistry.GetData(reqId);
@@ -778,10 +852,21 @@ namespace BlueprintMod
                     else if (activeItem is StardewValley.Object newObj)
                     {
                         placed = newObj.placementAction(Game1.currentLocation, (int)tile.X * 64, (int)tile.Y * 64, Game1.player);
+                        if (placed && newObj.IsSprinkler())
+                            ClearGroundCrop(tile);
+
+                        if (placed && !TryApplyAttachmentToPlacedObject(tile, ghost.AttachmentItemId))
+                        {
+                            Monitor.Log($"Failed to apply attachment '{ghost.AttachmentItemId}' to ghost object '{ghost.ItemId}' at {tile}.", LogLevel.Warn);
+                            placed = false;
+                        }
                     }
                 }
                 if (placed)
                 {
+                    if (!string.IsNullOrWhiteSpace(ghost.AttachmentItemId))
+                        ConsumeItems(ghost.AttachmentItemId, 1);
+
                     Game1.player.reduceActiveItemByOne();
                     placedGhosts.Remove(ghost);
                     Game1.playSound("dirtyHit");
@@ -904,6 +989,7 @@ namespace BlueprintMod
                 existing.Tile == ghost.Tile &&
                 existing.ItemId == ghost.ItemId &&
                 existing.ItemType == ghost.ItemType &&
+                existing.AttachmentItemId == ghost.AttachmentItemId &&
                 existing.Rotation == ghost.Rotation &&
                 existing.IsPlantingHint == ghost.IsPlantingHint &&
                 existing.PlantingMode == ghost.PlantingMode);
@@ -922,7 +1008,7 @@ namespace BlueprintMod
             Vector2 tile = ghost.Tile;
             if (!ghost.IsPlantingHint)
             {
-                if (Game1.currentLocation.Objects.TryGetValue(tile, out var obj) && obj.QualifiedItemId == ghost.ItemId)
+                if (Game1.currentLocation.Objects.TryGetValue(tile, out var obj) && DoesObjectMatchGhost(obj, ghost))
                     return true;
 
                 if (Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var feature) && feature is StardewValley.TerrainFeatures.Flooring flooring)
@@ -998,9 +1084,11 @@ namespace BlueprintMod
             if (feature is StardewValley.TerrainFeatures.Flooring flooring)
                 return itemAtTile != null && itemAtTile.ItemType == "Flooring" && flooring.whichFloor.Value != itemAtTile.FlooringId;
 
-            // Tilled soil is common in farm-design blueprints, so don't reject it as a hard collision in safe mode.
-            if (feature is StardewValley.TerrainFeatures.HoeDirt)
-                return false;
+            // Empty tilled soil is common in farm-design blueprints and is safe to reuse. A planted
+            // tile, however, must block a blueprint object/furniture in safe mode; otherwise direct
+            // placement can leave the object and crop occupying the same tile.
+            if (feature is StardewValley.TerrainFeatures.HoeDirt dirt)
+                return itemAtTile != null && dirt.crop != null;
 
             return !hasPlantingPlan;
         }
@@ -1080,6 +1168,7 @@ namespace BlueprintMod
                     added.Tile == ghost.Tile &&
                     added.ItemId == ghost.ItemId &&
                     added.ItemType == ghost.ItemType &&
+                    added.AttachmentItemId == ghost.AttachmentItemId &&
                     added.Rotation == ghost.Rotation &&
                     added.IsPlantingHint == ghost.IsPlantingHint &&
                     added.PlantingMode == ghost.PlantingMode));
@@ -1094,6 +1183,7 @@ namespace BlueprintMod
                         Tile = ghost.Tile,
                         ItemId = ghost.ItemId,
                         ItemType = ghost.ItemType,
+                        AttachmentItemId = ghost.AttachmentItemId,
                         Rotation = ghost.Rotation,
                         TilesWide = ghost.TilesWide,
                         TilesHigh = ghost.TilesHigh,
@@ -1122,8 +1212,17 @@ namespace BlueprintMod
             var plantingPlans = new List<PlantingPlan>();
             foreach (var tile in location.Objects.Keys.Where(t => t.X >= minX && t.X <= maxX && t.Y >= minY && t.Y <= maxY))
             {
-                items.Add(new BlueprintItem { ItemId = location.Objects[tile].QualifiedItemId, TileX = tile.X - minX, TileY = tile.Y - minY, Name = location.Objects[tile].DisplayName, ItemType = "Object" });
-                PlantingPlan indoorPotPlan = TryCreateIndoorPotPlantingPlan(location.Objects[tile], (int)(tile.X - minX), (int)(tile.Y - minY));
+                StardewValley.Object worldObject = location.Objects[tile];
+                items.Add(new BlueprintItem
+                {
+                    ItemId = worldObject.QualifiedItemId,
+                    AttachmentItemId = GetSprinklerAttachmentItemId(worldObject),
+                    TileX = tile.X - minX,
+                    TileY = tile.Y - minY,
+                    Name = worldObject.DisplayName,
+                    ItemType = "Object"
+                });
+                PlantingPlan indoorPotPlan = TryCreateIndoorPotPlantingPlan(worldObject, (int)(tile.X - minX), (int)(tile.Y - minY));
                 if (indoorPotPlan != null)
                     plantingPlans.Add(indoorPotPlan);
             }
@@ -1138,7 +1237,8 @@ namespace BlueprintMod
                         plantingPlans.Add(groundPlan);
                 }
             }
-            foreach (StardewValley.Objects.Furniture furniture in GetFurnitureInArea(location, minX, maxX, minY, maxY))
+            foreach (StardewValley.Objects.Furniture furniture in GetFurnitureInArea(location, minX, maxX, minY, maxY)
+                .Where(furniture => Config.SaveWallFurniture || furniture.isGroundFurniture()))
             {
                 Vector2 tile = furniture.TileLocation;
                 Point size = GetFurnitureTileSize(furniture);
@@ -1377,7 +1477,9 @@ namespace BlueprintMod
                     return;
                 }
 
-                List<PlantingValidationIssue> issues = ValidatePlantingTargets(targets);
+                List<PlantingValidationIssue> issues = isCreativeMode
+                    ? new List<PlantingValidationIssue>()
+                    : ValidatePlantingTargets(targets);
                 if (issues.Count > 0)
                 {
                     ShowPlantingIssues(issues);
@@ -1617,18 +1719,28 @@ namespace BlueprintMod
         {
             try
             {
-                List<PlantingValidationIssue> issues = ValidatePlantingTargets(targets);
-                if (issues.Count > 0)
+                PlacementAction action;
+                if (isCreativeMode)
                 {
-                    ShowPlantingIssues(issues);
-                    return false;
+                    action = CreatePlantingUndoAction(targets);
+                    PrepareGroundForPlanting(targets);
+                }
+                else
+                {
+                    List<PlantingValidationIssue> issues = ValidatePlantingTargets(targets);
+                    if (issues.Count > 0)
+                    {
+                        ShowPlantingIssues(issues);
+                        return false;
+                    }
+
+                    action = CreatePlantingUndoAction(targets);
                 }
 
-                PlacementAction action = CreatePlantingUndoAction(targets);
                 int plantedCount = 0;
                 foreach (PlantingTarget target in targets)
                 {
-                    if (TryPlantTarget(target))
+                    if (TryPlantTarget(target, replaceExistingCrop: isCreativeMode))
                     {
                         if (!isCreativeMode)
                         {
@@ -1712,7 +1824,7 @@ namespace BlueprintMod
 
                 foreach (PlantingTarget target in targets)
                 {
-                    if (TryPlantTarget(target))
+                    if (TryPlantTarget(target, replaceExistingCrop: true))
                     {
                         plantedCount++;
                     }
@@ -1752,7 +1864,17 @@ namespace BlueprintMod
             }
         }
 
-        private bool TryPlantTarget(PlantingTarget target)
+        private void ClearGroundCrop(Vector2 tile)
+        {
+            if (Game1.currentLocation.terrainFeatures.TryGetValue(tile, out var terrainFeature) &&
+                terrainFeature is StardewValley.TerrainFeatures.HoeDirt dirt &&
+                dirt.crop != null)
+            {
+                dirt.destroyCrop(false);
+            }
+        }
+
+        private bool TryPlantTarget(PlantingTarget target, bool replaceExistingCrop = false)
         {
             if (target == null)
                 return false;
@@ -1779,15 +1901,18 @@ namespace BlueprintMod
             if (!Game1.currentLocation.terrainFeatures.TryGetValue(targetTile, out var terrainFeature) || terrainFeature is not StardewValley.TerrainFeatures.HoeDirt dirt)
                 return false;
 
-            object plantedCrop = UnwrapNetValue(GetMemberValue(dirt, "crop"));
-            if (plantedCrop != null)
+            if (dirt.crop != null && !replaceExistingCrop)
                 return false;
 
             StardewValley.Crop crop = CreateCropInstance(target.SeedItemId, targetTile, Game1.currentLocation);
             if (crop == null)
                 return false;
 
-            return TrySetMemberValue(dirt, "crop", crop);
+            dirt.crop = crop;
+            crop.Dirt = dirt;
+            crop.currentLocation = Game1.currentLocation;
+            crop.updateDrawMath(targetTile);
+            return true;
         }
 
         private void ShowPlantingIssues(List<PlantingValidationIssue> issues)
@@ -2192,19 +2317,59 @@ namespace BlueprintMod
         {
             int state = Convert.ToInt32(UnwrapNetValue(GetMemberValue(dirt, "state")) ?? 0);
             var clone = new StardewValley.TerrainFeatures.HoeDirt(state, Game1.currentLocation);
+            clone.Location = Game1.currentLocation;
+            clone.Tile = tile;
 
             object fertilizer = UnwrapNetValue(GetMemberValue(dirt, "fertilizer"));
             if (fertilizer != null)
                 TrySetMemberValue(clone, "fertilizer", fertilizer);
 
             object crop = UnwrapNetValue(GetMemberValue(dirt, "crop"));
-            if (crop != null)
+            if (crop is StardewValley.Crop plantedCrop)
             {
-                string seedItemId = GetCropSeedItemId(crop);
-                StardewValley.Crop cropClone = CreateCropInstance(seedItemId, tile, Game1.currentLocation);
-                if (cropClone != null)
-                    TrySetMemberValue(clone, "crop", cropClone);
+                StardewValley.Crop cropClone = CloneCrop(plantedCrop, tile, Game1.currentLocation);
+                clone.crop = cropClone;
+                cropClone.Dirt = clone;
+                cropClone.currentLocation = Game1.currentLocation;
+                cropClone.updateDrawMath(tile);
             }
+
+            return clone;
+        }
+
+        private StardewValley.Crop CloneCrop(StardewValley.Crop crop, Vector2 tile, GameLocation location)
+        {
+            if (crop == null)
+                return null;
+
+            var clone = new StardewValley.Crop
+            {
+                currentLocation = location,
+                tilePosition = tile
+            };
+
+            clone.phaseDays.Clear();
+            foreach (int phaseDay in crop.phaseDays)
+                clone.phaseDays.Add(phaseDay);
+
+            clone.rowInSpriteSheet.Value = crop.rowInSpriteSheet.Value;
+            clone.phaseToShow.Value = crop.phaseToShow.Value;
+            clone.currentPhase.Value = crop.currentPhase.Value;
+            clone.indexOfHarvest.Value = crop.indexOfHarvest.Value;
+            clone.dayOfCurrentPhase.Value = crop.dayOfCurrentPhase.Value;
+            clone.tintColor.Value = crop.tintColor.Value;
+            clone.flip.Value = crop.flip.Value;
+            clone.fullyGrown.Value = crop.fullyGrown.Value;
+            clone.raisedSeeds.Value = crop.raisedSeeds.Value;
+            clone.programColored.Value = crop.programColored.Value;
+            clone.dead.Value = crop.dead.Value;
+            clone.forageCrop.Value = crop.forageCrop.Value;
+            clone.netSeedIndex.Value = crop.netSeedIndex.Value;
+            clone.overrideTexturePath.Value = crop.overrideTexturePath.Value;
+            clone.whichForageCrop.Value = crop.whichForageCrop.Value;
+            clone.replaceWithObjectOnFullGrown.Value = crop.replaceWithObjectOnFullGrown.Value;
+            clone.modData.CopyFrom(crop.modData);
+            clone.updateDrawMath(tile);
 
             return clone;
         }
@@ -2243,6 +2408,7 @@ namespace BlueprintMod
     public class BlueprintItem
     {
         public string ItemId { get; set; }
+        public string AttachmentItemId { get; set; }
         public string FlooringId { get; set; }
         public float TileX { get; set; }
         public float TileY { get; set; }
@@ -2270,6 +2436,7 @@ namespace BlueprintMod
         public Vector2 Tile { get; set; }
         public string ItemId { get; set; }
         public string ItemType { get; set; }
+        public string AttachmentItemId { get; set; }
         public int Rotation { get; set; }
         public int TilesWide { get; set; } = 1;
         public int TilesHigh { get; set; } = 1;
